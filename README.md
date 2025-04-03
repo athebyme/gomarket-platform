@@ -86,21 +86,17 @@ GoMarket Platform — это система для интеграции пост
 ### Локальная разработка
 
 ```bash
-# Клонировать репозиторий
 git clone https://github.com/yourusername/gomarket-platform.git
 cd gomarket-platform
 
-# Запустить все сервисы с помощью Docker Compose
 docker-compose -f deployments/docker-compose/dev.yml up
 ```
 
 ### Запуск отдельного сервиса
 
 ```bash
-# Перейти в директорию сервиса
 cd services/product
 
-# Запустить сервис
 go run cmd/main.go
 ```
 
