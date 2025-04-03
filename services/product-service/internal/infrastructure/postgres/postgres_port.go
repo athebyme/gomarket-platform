@@ -26,17 +26,11 @@ type Storage interface {
 type Port interface {
 	Storage
 
-	// BeginTx начинает новую транзакцию
 	BeginTx(ctx context.Context) (context.Context, error)
 
-	// CommitTx фиксирует транзакцию
 	CommitTx(ctx context.Context) error
 
-	// RollbackTx откатывает транзакцию
 	RollbackTx(ctx context.Context) error
 
-	// Метод закрытия соединения
-
-	// Close закрывает соединение с хранилищем
 	Close() error
 }
