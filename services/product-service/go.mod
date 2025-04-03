@@ -1,0 +1,1 @@
+module github.com/athebyme/gomarket-platform/product-service

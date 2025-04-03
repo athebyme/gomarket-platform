@@ -98,7 +98,7 @@ docker-compose -f deployments/docker-compose/dev.yml up
 
 ```bash
 # Перейти в директорию сервиса
-cd services/product
+cd services/product-service
 
 # Запустить сервис
 go run cmd/main.go
