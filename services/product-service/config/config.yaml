@@ -1,0 +1,77 @@
+appName: product-service
+version: 0.0.1
+logLevel: info
+env: development
+
+server:
+  host: 0.0.0.0
+  port: 8080
+  readTimeout: 10s
+  writeTimeout: 10s
+  shutdownTimeout: 5s
+  bodyLimit: 10
+
+postgres:
+  host: localhost
+  port: 5432
+  user: postgres
+  password: postgres
+  dbname: postgres
+  sslmode: disable
+  timeout: 5s
+  poolSize: 10
+
+redis:
+  host: localhost
+  port: 6379
+  password: ""
+  db: 0
+  poolSize: 10
+  minIdleConns: 2
+  connectTimeout: 1s
+  readTimeout: 1s
+  writeTimeout: 1s
+  poolTimeout: 4s
+  idleTimeout: 300s
+  idleCheckFreq: 60s
+  maxRetries: 3
+  minRetryBackoff: 8ms
+  maxRetryBackoff: 512ms
+  defaultExpiration: 10m
+
+kafka:
+  brokers:
+    - localhost:9092
+  groupID: product-service
+  topic: products
+  producerTopic: products-producer
+  consumerTopic: products-consumer
+  autoOffsetReset: latest
+  sessionTimeout: 10s
+  heartbeatTimeout: 3s
+  readTimeout: 10s
+  writeTimeout: 10s
+
+tracing:
+  enabled: true
+  serviceName: product-service
+  endpoint: jaeger:6831
+  probability: 0.1
+
+metrics:
+  enabled: true
+  serviceName: product-service
+  endpoint: /metrics
+
+security:
+  jwtSecret: your-secret-key
+  jwtExpirationMin: 60m
+  corsAllowOrigins:
+    - "*"
+
+resilience:
+  maxRetries: 3
+  retryWaitTime: 100ms
+  circuitTimeout: 30s
+  halfOpenMaxReqs: 5
+  tripThreshold: 10

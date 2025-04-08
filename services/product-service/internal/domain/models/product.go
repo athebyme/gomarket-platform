@@ -5,21 +5,19 @@ import (
 	"time"
 )
 
-// Product represents a unified product-service entity aggregated from different suppliers.
-// This structure is stored in the core.products table.
+// Product представляет модель товара для продажи на маркетплейсе
 type Product struct {
-	ID         string `json:"id"`
-	SupplierID int    `json:"supplier_id"`
-	// BaseData contains common product-service information in JSON format
-	// (name, description, price, etc.)
-	BaseData json.RawMessage `db:"base_data" json:"base_data"`
-	// Metadata can store additional supplier-service-specific attributes
+	ID         string          `json:"id"`
+	SupplierID int             `json:"supplier_id"`
+	TenantID   string          `json:"tenant_id"`
+	BaseData   json.RawMessage `db:"base_data" json:"base_data"`
+	// Metadata хранит в себе информацию, необходимую для системы
 	Metadata  json.RawMessage `db:"metadata" json:"metadata,omitempty"`
 	CreatedAt time.Time       `db:"created_at" json:"created_at"`
 	UpdatedAt time.Time       `db:"updated_at" json:"updated_at"`
 }
 
-// ProductInventory represents current stock information for a product-service
+// ProductInventory представляет собой модель описания остатков товара
 type ProductInventory struct {
 	ProductID  string    `json:"product_id"`
 	SupplierID int       `json:"supplier_id"`
@@ -27,7 +25,7 @@ type ProductInventory struct {
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 
-// ProductPrice represents pricing information for a product-service
+// ProductPrice представляет собой модель цен для товаров
 type ProductPrice struct {
 	ProductID    string    `json:"product_id"`
 	SupplierID   int       `json:"supplier_id"`
@@ -39,7 +37,7 @@ type ProductPrice struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
-// ProductMedia stores information about product-service images and videos
+// ProductMedia представляет собой модель медиа-файлов товара
 type ProductMedia struct {
 	ID        string    `json:"id"`
 	ProductID string    `json:"product_id"`
@@ -49,7 +47,9 @@ type ProductMedia struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// ProductHistoryRecord представляет запись в истории изменений продукта
+// ---------------------------- KAFKA MODELS ----------------------------
+
+// ProductHistoryRecord представляет собой записи в истории изменений продукта для Kafka
 type ProductHistoryRecord struct {
 	ID            string   `json:"id"`
 	ProductID     string   `json:"product_id"`
