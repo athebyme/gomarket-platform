@@ -13,6 +13,51 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// ProductStorageInterface определяет интерфейс взаимодействия с хранилищем PostgreSQL
+type ProductStorageInterface interface {
+	// Product методы
+	SaveProduct(ctx context.Context, product *models.Product) error
+	GetProduct(ctx context.Context, productID string, tenantID string) (*models.Product, error)
+	GetProductBySupplier(ctx context.Context, productID, supplierID, tenantID string) (*models.Product, error)
+	ListProducts(ctx context.Context, tenantID string, filters map[string]interface{}, page, pageSize int) ([]*models.Product, int, error)
+	DeleteProduct(ctx context.Context, productID string, tenantID string) error
+
+	// ProductInventory методы
+	SaveInventory(ctx context.Context, inventory *models.ProductInventory, tenantID string) error
+	GetInventory(ctx context.Context, productID string, tenantID string) (*models.ProductInventory, error)
+
+	// ProductPrice методы
+	SavePrice(ctx context.Context, price *models.ProductPrice, tenantID string) error
+	GetPrice(ctx context.Context, productID string, tenantID string) (*models.ProductPrice, error)
+
+	// ProductMedia методы
+	SaveMedia(ctx context.Context, media *models.ProductMedia, tenantID string) error
+	GetMediaByProductID(ctx context.Context, productID string, tenantID string) ([]*models.ProductMedia, error)
+	DeleteMedia(ctx context.Context, mediaID string, tenantID string) error
+
+	// ProductCategory методы
+	SaveCategory(ctx context.Context, category *models.ProductCategory, tenantID string) error
+	GetCategory(ctx context.Context, categoryID string, tenantID string) (*models.ProductCategory, error)
+	ListCategories(ctx context.Context, tenantID string, parentID string) ([]*models.ProductCategory, error)
+	DeleteCategory(ctx context.Context, categoryID string, tenantID string) error
+
+	// ProductHistory методы
+	SaveHistoryRecord(ctx context.Context, record *models.ProductHistoryRecord, tenantID string) error
+	GetProductHistory(ctx context.Context, productID string, tenantID string, limit, offset int) ([]*models.ProductHistoryRecord, error)
+}
+
+type ProductStoragePort interface {
+	ProductStorageInterface
+
+	BeginTx(ctx context.Context) (context.Context, error)
+
+	CommitTx(ctx context.Context) error
+
+	RollbackTx(ctx context.Context) error
+
+	Close() error
+}
+
 // contextKey тип для ключей контекста
 type contextKey string
 
@@ -21,31 +66,31 @@ const (
 	txKey contextKey = "transaction"
 )
 
-// PostgresRepository реализация интерфейса Repository для PostgreSQL
-type PostgresRepository struct {
+// ProductStorage реализация интерфейса Repository для PostgreSQL
+type ProductStorage struct {
 	pool *pgxpool.Pool
 }
 
-// NewPostgresRepository создает новый экземпляр PostgresRepository
-func NewPostgresRepository(ctx context.Context, connectionString string) (*PostgresRepository, error) {
+// NewPostgresRepository создает новый экземпляр ProductStorage
+func NewPostgresRepository(ctx context.Context, connectionString string) (*ProductStorage, error) {
 	pool, err := pgxpool.New(ctx, connectionString)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to postgres: %w", err)
 	}
 
-	return &PostgresRepository{
+	return &ProductStorage{
 		pool: pool,
 	}, nil
 }
 
 // Close закрывает соединение с БД
-func (r *PostgresRepository) Close() error {
+func (r *ProductStorage) Close() error {
 	r.pool.Close()
 	return nil
 }
 
 // getTx получает транзакцию из контекста
-func (r *PostgresRepository) getTx(ctx context.Context) pgx.Tx {
+func (r *ProductStorage) getTx(ctx context.Context) pgx.Tx {
 	tx, ok := ctx.Value(txKey).(pgx.Tx)
 	if !ok {
 		return nil
@@ -54,7 +99,7 @@ func (r *PostgresRepository) getTx(ctx context.Context) pgx.Tx {
 }
 
 // getExecutor возвращает исполнителя запросов (транзакцию или пул)
-func (r *PostgresRepository) getExecutor(ctx context.Context) interface{} {
+func (r *ProductStorage) getExecutor(ctx context.Context) interface{} {
 	tx := r.getTx(ctx)
 	if tx != nil {
 		return tx
@@ -63,7 +108,7 @@ func (r *PostgresRepository) getExecutor(ctx context.Context) interface{} {
 }
 
 // BeginTx начинает новую транзакцию
-func (r *PostgresRepository) BeginTx(ctx context.Context) (context.Context, error) {
+func (r *ProductStorage) BeginTx(ctx context.Context) (context.Context, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return ctx, fmt.Errorf("failed to begin transaction: %w", err)
@@ -72,7 +117,7 @@ func (r *PostgresRepository) BeginTx(ctx context.Context) (context.Context, erro
 }
 
 // CommitTx фиксирует транзакцию
-func (r *PostgresRepository) CommitTx(ctx context.Context) error {
+func (r *ProductStorage) CommitTx(ctx context.Context) error {
 	tx := r.getTx(ctx)
 	if tx == nil {
 		return errors.New("no transaction in context")
@@ -81,7 +126,7 @@ func (r *PostgresRepository) CommitTx(ctx context.Context) error {
 }
 
 // RollbackTx откатывает транзакцию
-func (r *PostgresRepository) RollbackTx(ctx context.Context) error {
+func (r *ProductStorage) RollbackTx(ctx context.Context) error {
 	tx := r.getTx(ctx)
 	if tx == nil {
 		return errors.New("no transaction in context")
@@ -90,7 +135,7 @@ func (r *PostgresRepository) RollbackTx(ctx context.Context) error {
 }
 
 // SaveProduct сохраняет продукт в базу данных
-func (r *PostgresRepository) SaveProduct(ctx context.Context, product *models.Product, tenantID string) error {
+func (r *ProductStorage) SaveProduct(ctx context.Context, product *models.Product) error {
 	executor := r.getExecutor(ctx)
 
 	query := `
@@ -113,10 +158,10 @@ func (r *PostgresRepository) SaveProduct(ctx context.Context, product *models.Pr
 	var err error
 	switch e := executor.(type) {
 	case pgx.Tx:
-		_, err = e.Exec(ctx, query, product.ID, tenantID, product.SupplierID, product.BaseData,
+		_, err = e.Exec(ctx, query, product.ID, product.TenantID, product.SupplierID, product.BaseData,
 			product.Metadata, product.CreatedAt, product.UpdatedAt)
 	case *pgxpool.Pool:
-		_, err = e.Exec(ctx, query, product.ID, tenantID, product.SupplierID, product.BaseData,
+		_, err = e.Exec(ctx, query, product.ID, product.TenantID, product.SupplierID, product.BaseData,
 			product.Metadata, product.CreatedAt, product.UpdatedAt)
 	}
 
@@ -127,7 +172,7 @@ func (r *PostgresRepository) SaveProduct(ctx context.Context, product *models.Pr
 }
 
 // GetProduct получает продукт по ID
-func (r *PostgresRepository) GetProduct(ctx context.Context, productID string, tenantID string) (*models.Product, error) {
+func (r *ProductStorage) GetProduct(ctx context.Context, productID string, tenantID string) (*models.Product, error) {
 	executor := r.getExecutor(ctx)
 
 	query := `
@@ -151,7 +196,7 @@ func (r *PostgresRepository) GetProduct(ctx context.Context, productID string, t
 	}
 
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil // Продукт не найден
 		}
 		return nil, fmt.Errorf("failed to get product: %w", err)
@@ -160,15 +205,44 @@ func (r *PostgresRepository) GetProduct(ctx context.Context, productID string, t
 	return &product, nil
 }
 
+func (r *ProductStorage) GetProductBySupplier(ctx context.Context, productID, supplierID, tenantID string) (*models.Product, error) {
+	executor := r.getExecutor(ctx)
+
+	query := `
+	SELECT id, supplier_id, base_data, metadata, created_at, updated_at
+	FROM product.products
+	WHERE id = $1 AND tenant_id = $2 AND supplier_id = $3
+	`
+
+	var product models.Product
+	var err error
+	switch e := executor.(type) {
+	case pgx.Tx:
+		row := e.QueryRow(ctx, query, productID, supplierID, tenantID)
+		err = row.Scan(&product.ID, &product.SupplierID, &product.BaseData, &product.Metadata,
+			&product.CreatedAt, &product.UpdatedAt)
+	case *pgxpool.Pool:
+		row := e.QueryRow(ctx, query, productID, supplierID, tenantID)
+		err = row.Scan(&product.ID, &product.SupplierID, &product.BaseData, &product.Metadata,
+			&product.CreatedAt, &product.UpdatedAt)
+	}
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get product: %w", err)
+	}
+	return &product, nil
+}
+
 // ListProducts возвращает список продуктов с поддержкой пагинации и фильтрации
-func (r *PostgresRepository) ListProducts(ctx context.Context, tenantID string, filters map[string]interface{}, page, pageSize int) ([]*models.Product, int, error) {
-	// Базовый запрос
+func (r *ProductStorage) ListProducts(ctx context.Context, tenantID string, filters map[string]interface{}, page, pageSize int) ([]*models.Product, int, error) {
 	baseQuery := `
 		FROM product.products
 		WHERE tenant_id = $1
 	`
 
-	// Добавляем фильтры
 	args := []interface{}{tenantID}
 	argPos := 2
 	var filterConditions []string
@@ -246,7 +320,7 @@ func (r *PostgresRepository) ListProducts(ctx context.Context, tenantID string, 
 }
 
 // DeleteProduct удаляет продукт из хранилища
-func (r *PostgresRepository) DeleteProduct(ctx context.Context, productID string, tenantID string) error {
+func (r *ProductStorage) DeleteProduct(ctx context.Context, productID string, tenantID string) error {
 	executor := r.getExecutor(ctx)
 
 	query := `
@@ -270,7 +344,7 @@ func (r *PostgresRepository) DeleteProduct(ctx context.Context, productID string
 }
 
 // SaveInventory сохраняет информацию об инвентаре продукта
-func (r *PostgresRepository) SaveInventory(ctx context.Context, inventory *models.ProductInventory, tenantID string) error {
+func (r *ProductStorage) SaveInventory(ctx context.Context, inventory *models.ProductInventory, tenantID string) error {
 	executor := r.getExecutor(ctx)
 
 	query := `
@@ -304,7 +378,7 @@ func (r *PostgresRepository) SaveInventory(ctx context.Context, inventory *model
 }
 
 // GetInventory получает информацию об инвентаре продукта
-func (r *PostgresRepository) GetInventory(ctx context.Context, productID string, tenantID string) (*models.ProductInventory, error) {
+func (r *ProductStorage) GetInventory(ctx context.Context, productID string, tenantID string) (*models.ProductInventory, error) {
 	executor := r.getExecutor(ctx)
 
 	query := `
@@ -336,7 +410,7 @@ func (r *PostgresRepository) GetInventory(ctx context.Context, productID string,
 }
 
 // SavePrice сохраняет информацию о цене продукта
-func (r *PostgresRepository) SavePrice(ctx context.Context, price *models.ProductPrice, tenantID string) error {
+func (r *ProductStorage) SavePrice(ctx context.Context, price *models.ProductPrice, tenantID string) error {
 	executor := r.getExecutor(ctx)
 
 	query := `
@@ -375,7 +449,7 @@ func (r *PostgresRepository) SavePrice(ctx context.Context, price *models.Produc
 }
 
 // GetPrice получает информацию о цене продукта
-func (r *PostgresRepository) GetPrice(ctx context.Context, productID string, tenantID string) (*models.ProductPrice, error) {
+func (r *ProductStorage) GetPrice(ctx context.Context, productID string, tenantID string) (*models.ProductPrice, error) {
 	executor := r.getExecutor(ctx)
 
 	query := `
@@ -409,7 +483,7 @@ func (r *PostgresRepository) GetPrice(ctx context.Context, productID string, ten
 }
 
 // SaveMedia сохраняет медиафайл продукта
-func (r *PostgresRepository) SaveMedia(ctx context.Context, media *models.ProductMedia, tenantID string) error {
+func (r *ProductStorage) SaveMedia(ctx context.Context, media *models.ProductMedia, tenantID string) error {
 	executor := r.getExecutor(ctx)
 
 	// Если ID пустой, генерируем новый
@@ -451,7 +525,7 @@ func (r *PostgresRepository) SaveMedia(ctx context.Context, media *models.Produc
 }
 
 // GetMediaByProductID получает все медиафайлы для продукта
-func (r *PostgresRepository) GetMediaByProductID(ctx context.Context, productID string, tenantID string) ([]*models.ProductMedia, error) {
+func (r *ProductStorage) GetMediaByProductID(ctx context.Context, productID string, tenantID string) ([]*models.ProductMedia, error) {
 	executor := r.getExecutor(ctx)
 
 	query := `
@@ -495,7 +569,7 @@ func (r *PostgresRepository) GetMediaByProductID(ctx context.Context, productID 
 }
 
 // DeleteMedia удаляет медиафайл
-func (r *PostgresRepository) DeleteMedia(ctx context.Context, mediaID string, tenantID string) error {
+func (r *ProductStorage) DeleteMedia(ctx context.Context, mediaID string, tenantID string) error {
 	executor := r.getExecutor(ctx)
 
 	query := `
@@ -519,7 +593,7 @@ func (r *PostgresRepository) DeleteMedia(ctx context.Context, mediaID string, te
 }
 
 // SaveCategory сохраняет категорию продукта
-func (r *PostgresRepository) SaveCategory(ctx context.Context, category *models.ProductCategory, tenantID string) error {
+func (r *ProductStorage) SaveCategory(ctx context.Context, category *models.ProductCategory, tenantID string) error {
 	executor := r.getExecutor(ctx)
 
 	// Если ID пустой, генерируем новый
@@ -558,7 +632,7 @@ func (r *PostgresRepository) SaveCategory(ctx context.Context, category *models.
 }
 
 // GetCategory получает категорию по ID
-func (r *PostgresRepository) GetCategory(ctx context.Context, categoryID string, tenantID string) (*models.ProductCategory, error) {
+func (r *ProductStorage) GetCategory(ctx context.Context, categoryID string, tenantID string) (*models.ProductCategory, error) {
 	executor := r.getExecutor(ctx)
 
 	query := `
@@ -626,7 +700,7 @@ func (r *PostgresRepository) GetCategory(ctx context.Context, categoryID string,
 }
 
 // ListCategories возвращает список категорий с возможностью фильтрации по родительской категории
-func (r *PostgresRepository) ListCategories(ctx context.Context, tenantID string, parentID string) ([]*models.ProductCategory, error) {
+func (r *ProductStorage) ListCategories(ctx context.Context, tenantID string, parentID string) ([]*models.ProductCategory, error) {
 	executor := r.getExecutor(ctx)
 
 	var query string
@@ -723,7 +797,7 @@ func (r *PostgresRepository) ListCategories(ctx context.Context, tenantID string
 }
 
 // DeleteCategory удаляет категорию
-func (r *PostgresRepository) DeleteCategory(ctx context.Context, categoryID string, tenantID string) error {
+func (r *ProductStorage) DeleteCategory(ctx context.Context, categoryID string, tenantID string) error {
 	executor := r.getExecutor(ctx)
 
 	query := `
@@ -747,7 +821,7 @@ func (r *PostgresRepository) DeleteCategory(ctx context.Context, categoryID stri
 }
 
 // SaveHistoryRecord сохраняет запись в истории изменений продукта
-func (r *PostgresRepository) SaveHistoryRecord(ctx context.Context, record *models.ProductHistoryRecord, tenantID string) error {
+func (r *ProductStorage) SaveHistoryRecord(ctx context.Context, record *models.ProductHistoryRecord, tenantID string) error {
 	executor := r.getExecutor(ctx)
 
 	// Если ID пустой, генерируем новый
@@ -795,7 +869,7 @@ func (r *PostgresRepository) SaveHistoryRecord(ctx context.Context, record *mode
 }
 
 // GetProductHistory получает историю изменений продукта
-func (r *PostgresRepository) GetProductHistory(ctx context.Context, productID string, tenantID string, limit, offset int) ([]*models.ProductHistoryRecord, error) {
+func (r *ProductStorage) GetProductHistory(ctx context.Context, productID string, tenantID string, limit, offset int) ([]*models.ProductHistoryRecord, error) {
 	executor := r.getExecutor(ctx)
 
 	query := `

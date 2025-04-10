@@ -41,18 +41,15 @@ var (
 )
 
 func main() {
-	// Загружаем конфигурацию
 	cfg, err := config.Load("")
 	if err != nil {
 		fmt.Printf("Ошибка загрузки конфигурации: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Создаем корневой контекст с возможностью отмены
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Инициализируем логгер
 	log, err := logger.NewZapLogger(cfg.LogLevel, cfg.ENV == "production")
 	if err != nil {
 		fmt.Printf("Ошибка инициализации логгера: %v\n", err)
@@ -75,14 +72,14 @@ func main() {
 		cfg.Postgres.Timeout,
 	)
 
-	db, err := postgres.NewPostgresRepository(
+	repo, err := postgres.NewPostgresRepository(
 		ctx,
 		connectionStr,
 	)
 	if err != nil {
 		log.Fatal("Ошибка инициализации хранилища", interfaces.LogField{Key: "error", Value: err.Error()})
 	}
-	defer db.Close()
+	defer repo.Close()
 
 	log.Info("Хранилище инициализировано")
 
@@ -101,7 +98,6 @@ func main() {
 	defer cacheClient.Close()
 	log.Info("Кэш инициализирован")
 
-	// Инициализируем систему обмена сообщениями
 	messagingClient, err := messaging.NewKafkaMessaging(cfg.Kafka.Brokers, cfg.Kafka.GroupID)
 	if err != nil {
 		log.Fatal("Ошибка инициализации системы обмена сообщениями", interfaces.LogField{Key: "error", Value: err.Error()})
@@ -109,8 +105,7 @@ func main() {
 	defer messagingClient.Close()
 	log.Info("Система обмена сообщениями инициализирована")
 
-	// Инициализируем сервис продуктов
-	productService, err := services.NewProductService(db, cacheClient, messagingClient, log)
+	productService := services.NewProductService(repo, cacheClient, messagingClient, log)
 	if err != nil {
 		log.Fatal("Ошибка инициализации сервиса продуктов", interfaces.LogField{Key: "error", Value: err.Error()})
 	}
@@ -140,151 +135,14 @@ func main() {
 	log.Info("Воркер корректно завершил работу")
 }
 
-// subscribeToProductCommands подписывается на команды для продуктов
-func subscribeToProductCommands(
-	ctx context.Context,
-	messagingClient interfaces.MessagingPort,
-	productService *services.ProductService,
-	log interfaces.LoggerPort,
-	wg *sync.WaitGroup,
-) {
-	commandHandler := func(ctx context.Context, msg *interfaces.Message) error {
-		startTime := time.Now()
-		activeWorkers.Inc()
-		defer activeWorkers.Dec()
-
-		log.InfoWithContext(ctx, "Получена команда для продукта",
-			interfaces.LogField{Key: "message_id", Value: msg.ID},
-			interfaces.LogField{Key: "topic", Value: msg.Topic},
-		)
-
-		var command struct {
-			CommandType string                 `json:"command_type"`
-			TenantID    string                 `json:"tenant_id"`
-			Payload     map[string]interface{} `json:"payload"`
-		}
-
-		if err := json.Unmarshal(msg.Value, &command); err != nil {
-			log.ErrorWithContext(ctx, "Ошибка декодирования команды",
-				interfaces.LogField{Key: "error", Value: err.Error()},
-				interfaces.LogField{Key: "message_id", Value: msg.ID},
-			)
-			messagesProcessed.WithLabelValues(msg.Topic, "error").Inc()
-			return err
-		}
-
-		cmdCtx := context.WithValue(ctx, "tenant_id", command.TenantID)
-
-		var err error
-		switch command.CommandType {
-		case "sync_products_from_supplier":
-			// Пример обработки команды синхронизации продуктов от поставщика
-			supplierID, ok := command.Payload["supplier_id"].(float64)
-			if !ok {
-				log.ErrorWithContext(ctx, "Некорректный формат supplier_id",
-					interfaces.LogField{Key: "message_id", Value: msg.ID},
-				)
-				messagesProcessed.WithLabelValues(msg.Topic, "error").Inc()
-				return fmt.Errorf("некорректный формат supplier_id")
-			}
-
-			_, err = productService.SyncProductsFromSupplier(cmdCtx, int(supplierID), command.TenantID)
-
-		case "sync_product_to_marketplace":
-			productID, ok := command.Payload["product_id"].(string)
-			if !ok {
-				log.ErrorWithContext(ctx, "Некорректный формат product_id",
-					interfaces.LogField{Key: "message_id", Value: msg.ID},
-				)
-				messagesProcessed.WithLabelValues(msg.Topic, "error").Inc()
-				return fmt.Errorf("некорректный формат product_id")
-			}
-
-			marketplaceID, ok := command.Payload["marketplace_id"].(float64)
-			if !ok {
-				log.ErrorWithContext(ctx, "Некорректный формат marketplace_id",
-					interfaces.LogField{Key: "message_id", Value: msg.ID},
-				)
-				messagesProcessed.WithLabelValues(msg.Topic, "error").Inc()
-				return fmt.Errorf("некорректный формат marketplace_id")
-			}
-
-			err = productService.SyncProductToMarketplace(cmdCtx, productID, int(marketplaceID), command.TenantID)
-
-		default:
-			log.WarnWithContext(ctx, "Неизвестный тип команды",
-				interfaces.LogField{Key: "command_type", Value: command.CommandType},
-				interfaces.LogField{Key: "message_id", Value: msg.ID},
-			)
-			messagesProcessed.WithLabelValues(msg.Topic, "unknown").Inc()
-			return nil // Игнорируем неизвестные команды
-		}
-
-		if err != nil {
-			log.ErrorWithContext(ctx, "Ошибка выполнения команды",
-				interfaces.LogField{Key: "error", Value: err.Error()},
-				interfaces.LogField{Key: "command_type", Value: command.CommandType},
-				interfaces.LogField{Key: "message_id", Value: msg.ID},
-			)
-			messagesProcessed.WithLabelValues(msg.Topic, "error").Inc()
-			return err
-		}
-
-		// Обновляем метрики
-		duration := time.Since(startTime).Seconds()
-		messageProcessingDuration.WithLabelValues(msg.Topic).Observe(duration)
-		messagesProcessed.WithLabelValues(msg.Topic, "success").Inc()
-
-		log.InfoWithContext(ctx, "Команда успешно обработана",
-			interfaces.LogField{Key: "command_type", Value: command.CommandType},
-			interfaces.LogField{Key: "message_id", Value: msg.ID},
-			interfaces.LogField{Key: "duration", Value: duration},
-		)
-
-		return nil
-	}
-
-	cfg := &interfaces.ConsumerConfig{
-		GroupID:            "product-service-commands",
-		AutoCommit:         false, // Ручное подтверждение для гарантии обработки
-		AutoCommitInterval: 0,
-		MaxPollRecords:     10,
-		PollTimeout:        100 * time.Millisecond,
-	}
-
-	// Увеличиваем счетчик в WaitGroup
-	wg.Add(1)
-
-	// Подписываемся на топик команд
-	go func() {
-		defer wg.Done()
-
-		// Подписываемся на топик команд
-		unsubscribe, err := messagingClient.SubscribeWithConfig(ctx, "product-commands", commandHandler, cfg)
-		if err != nil {
-			log.Error("Ошибка подписки на команды продуктов",
-				interfaces.LogField{Key: "error", Value: err.Error()})
-			return
-		}
-		defer unsubscribe()
-
-		log.Info("Подписка на команды продуктов установлена")
-
-		// Ожидаем отмены контекста
-		<-ctx.Done()
-		log.Info("Отмена подписки на команды продуктов")
-	}()
-}
-
 // subscribeToProductEvents подписывается на события продуктов
 func subscribeToProductEvents(
 	ctx context.Context,
 	messagingClient interfaces.MessagingPort,
-	productService *services.ProductService,
+	productService services.ProductServiceInterface,
 	log interfaces.LoggerPort,
 	wg *sync.WaitGroup,
 ) {
-	// Обработчик событий для продуктов
 	eventHandler := func(ctx context.Context, msg *interfaces.Message) error {
 		startTime := time.Now()
 		activeWorkers.Inc()
@@ -295,11 +153,11 @@ func subscribeToProductEvents(
 			interfaces.LogField{Key: "topic", Value: msg.Topic},
 		)
 
-		// Декодируем событие
 		var event struct {
-			EventType string                 `json:"event_type"`
-			TenantID  string                 `json:"tenant_id"`
-			Payload   map[string]interface{} `json:"payload"`
+			EventType  string                 `json:"event_type"`
+			TenantID   string                 `json:"tenant_id"`
+			SupplierID string                 `json:"supplier_id"`
+			Payload    map[string]interface{} `json:"payload"`
 		}
 
 		if err := json.Unmarshal(msg.Value, &event); err != nil {
@@ -311,18 +169,51 @@ func subscribeToProductEvents(
 			return err
 		}
 
-		// Создаем контекст с tenant_id
 		evtCtx := context.WithValue(ctx, "tenant_id", event.TenantID)
 
-		// Обрабатываем событие в зависимости от его типа
 		switch event.EventType {
 		case "product_price_updated":
-			// Пример обработки события обновления цены продукта
-			// В реальном приложении здесь был бы код для обработки события
+			productID, _ := event.Payload["product_id"].(string)
+			price, _ := event.Payload["price"].(float64)
+
+			log.InfoWithContext(evtCtx, "Обработка события обновления цены",
+				interfaces.LogField{Key: "product_id", Value: productID},
+				interfaces.LogField{Key: "price", Value: price},
+			)
+
+			cacheKey := fmt.Sprintf("product:%s", productID)
+			productService.InvalidateCache(evtCtx, cacheKey, event.TenantID)
 
 		case "product_inventory_updated":
-			// Пример обработки события обновления инвентаря продукта
-			// В реальном приложении здесь был бы код для обработки события
+			productID, _ := event.Payload["product_id"].(string)
+			quantity, _ := event.Payload["quantity"].(float64)
+
+			log.InfoWithContext(evtCtx, "Обработка события обновления инвентаря",
+				interfaces.LogField{Key: "product_id", Value: productID},
+				interfaces.LogField{Key: "quantity", Value: quantity},
+			)
+
+			cacheKey := fmt.Sprintf("product:%s", productID)
+			productService.InvalidateCache(evtCtx, cacheKey, event.TenantID)
+
+		case "product_synced_to_marketplace":
+			productID, _ := event.Payload["product_id"].(string)
+			marketplaceID, _ := event.Payload["marketplace_id"].(float64)
+			status, _ := event.Payload["status"].(string)
+
+			log.InfoWithContext(evtCtx, "Продукт синхронизирован с маркетплейсом",
+				interfaces.LogField{Key: "product_id", Value: productID},
+				interfaces.LogField{Key: "marketplace_id", Value: marketplaceID},
+				interfaces.LogField{Key: "status", Value: status},
+			)
+
+			if status == "success" {
+				product, err := productService.GetProduct(evtCtx, productID, event.SupplierID, event.TenantID)
+				if err == nil && product != nil {
+					// Обновляем метаданные и сохраняем продукт
+					// ...
+				}
+			}
 
 		default:
 			log.WarnWithContext(ctx, "Неизвестный тип события",
@@ -330,10 +221,9 @@ func subscribeToProductEvents(
 				interfaces.LogField{Key: "message_id", Value: msg.ID},
 			)
 			messagesProcessed.WithLabelValues(msg.Topic, "unknown").Inc()
-			return nil // Игнорируем неизвестные события
+			return nil
 		}
 
-		// Обновляем метрики
 		duration := time.Since(startTime).Seconds()
 		messageProcessingDuration.WithLabelValues(msg.Topic).Observe(duration)
 		messagesProcessed.WithLabelValues(msg.Topic, "success").Inc()
@@ -347,24 +237,12 @@ func subscribeToProductEvents(
 		return nil
 	}
 
-	// Подписываемся на события с настройками
-	config := &interfaces.ConsumerConfig{
-		GroupID:            "product-service-events",
-		AutoCommit:         true, // Автоматическое подтверждение
-		AutoCommitInterval: 5 * time.Second,
-		MaxPollRecords:     100,
-		PollTimeout:        100 * time.Millisecond,
-	}
-
-	// Увеличиваем счетчик в WaitGroup
 	wg.Add(1)
 
-	// Подписываемся на топик событий
 	go func() {
 		defer wg.Done()
 
-		// Подписываемся на топик событий
-		unsubscribe, err := messagingClient.SubscribeWithConfig(ctx, "product-events", eventHandler, config)
+		unsubscribe, err := messagingClient.Subscribe(ctx, "product-events", eventHandler)
 		if err != nil {
 			log.Error("Ошибка подписки на события продуктов",
 				interfaces.LogField{Key: "error", Value: err.Error()})
@@ -374,7 +252,6 @@ func subscribeToProductEvents(
 
 		log.Info("Подписка на события продуктов установлена")
 
-		// Ожидаем отмены контекста
 		<-ctx.Done()
 		log.Info("Отмена подписки на события продуктов")
 	}()

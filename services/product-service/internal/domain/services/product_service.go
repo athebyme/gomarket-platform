@@ -5,453 +5,374 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
-	"github.com/athebyme/gomarket-platform/product-service/internal/adapters/storage"
+	"github.com/athebyme/gomarket-platform/pkg/interfaces"
+	"github.com/athebyme/gomarket-platform/product-service/internal/adapters/messaging"
+	postgres "github.com/athebyme/gomarket-platform/product-service/internal/adapters/storage"
 	"github.com/athebyme/gomarket-platform/product-service/internal/domain/models"
 	"github.com/google/uuid"
 )
 
-// ProductService предоставляет бизнес-логику для работы с продуктами
+type ProductServiceInterface interface {
+	// Основные CRUD операции
+	CreateProduct(ctx context.Context, product *models.Product) (*models.Product, error)
+	GetProduct(ctx context.Context, productID, supplierID, tenantID string) (*models.Product, error)
+	UpdateProduct(ctx context.Context, product *models.Product) (*models.Product, error)
+	DeleteProduct(ctx context.Context, productID, supplierID, tenantID string) error
+	ListProducts(ctx context.Context, tenantID string, filters map[string]interface{}, page, pageSize int) ([]*models.Product, int, error)
+
+	// Операции с ценами и инвентарем
+	UpdatePrice(ctx context.Context, price *models.ProductPrice, tenantID string) error
+	UpdateInventory(ctx context.Context, inventory *models.ProductInventory, tenantID string) error
+
+	// Синхронизация с внешними системами
+	SyncProductToMarketplace(ctx context.Context, productID string, marketplaceID int, tenantID string) error
+	SyncProductsFromSupplier(ctx context.Context, supplierID int, tenantID string) (int, error)
+
+	// Кэширование
+	InvalidateCache(ctx context.Context, key string, tenantID string) error
+}
+
 type ProductService struct {
-	repository postgres.Port
+	repository postgres.ProductStoragePort
+	cache      interfaces.CachePort
+	messaging  interfaces.MessagingPort
+	logger     interfaces.LoggerPort
 }
 
 // NewProductService создает новый экземпляр ProductService
-func NewProductService(repository postgres.Repository) *ProductService {
+func NewProductService(
+	repository postgres.ProductStoragePort,
+	cache interfaces.CachePort,
+	messaging interfaces.MessagingPort,
+	logger interfaces.LoggerPort,
+) ProductServiceInterface {
 	return &ProductService{
 		repository: repository,
+		cache:      cache,
+		messaging:  messaging,
+		logger:     logger,
 	}
 }
 
-// CreateProduct создает новый продукт
-func (s *ProductService) CreateProduct(ctx context.Context, product *models.Product, tenantID string, userID string) (*models.Product, error) {
-	// Генерируем ID для нового продукта, если ID не задан
+func (s *ProductService) CreateProduct(ctx context.Context, product *models.Product) (*models.Product, error) {
 	if product.ID == "" {
 		product.ID = uuid.New().String()
 	}
 
-	// Устанавливаем время создания и обновления
 	now := time.Now().UTC()
 	product.CreatedAt = now
 	product.UpdatedAt = now
 
-	// Начинаем транзакцию
-	txCtx, err := s.repository.(postgres.Port).BeginTx(ctx)
+	err := s.repository.SaveProduct(ctx, product)
 	if err != nil {
-		return nil, fmt.Errorf("failed to begin transaction: %w", err)
-	}
-
-	// Сохраняем продукт
-	err = s.repository.SaveProduct(txCtx, product, tenantID)
-	if err != nil {
-		s.repository.(postgres.Port).RollbackTx(txCtx)
 		return nil, fmt.Errorf("failed to save product: %w", err)
 	}
 
-	// Создаем запись в истории изменений
-	historyRecord := &models.ProductHistoryRecord{
-		ID:         uuid.New().String(),
-		ProductID:  product.ID,
-		ChangeType: "create",
-		After:      product,
-		ChangedBy:  userID,
-		ChangedAt:  time.Now().Unix(),
+	event := struct {
+		EventType string                 `json:"event_type"`
+		TenantID  string                 `json:"tenant_id"`
+		Payload   map[string]interface{} `json:"payload"`
+	}{
+		EventType: messaging.ProductCreatedEvent,
+		TenantID:  product.TenantID,
+		Payload: map[string]interface{}{
+			"product_id":  product.ID,
+			"supplier_id": product.SupplierID,
+		},
 	}
 
-	err = s.repository.SaveHistoryRecord(txCtx, historyRecord, tenantID)
+	eventData, _ := json.Marshal(event)
+	err = s.messaging.Publish(ctx, "product-events", eventData)
 	if err != nil {
-		s.repository.(postgres.Port).RollbackTx(txCtx)
-		return nil, fmt.Errorf("failed to save history record: %w", err)
-	}
-
-	// Фиксируем транзакцию
-	err = s.repository.(postgres.Port).CommitTx(txCtx)
-	if err != nil {
-		s.repository.(postgres.Port).RollbackTx(txCtx)
-		return nil, fmt.Errorf("failed to commit transaction: %w", err)
+		return nil, err
 	}
 
 	return product, nil
 }
 
-// UpdateProduct обновляет существующий продукт
-func (s *ProductService) UpdateProduct(ctx context.Context, product *models.Product, tenantID string, userID string, comment string) (*models.Product, error) {
-	// Получаем текущую версию продукта
-	existingProduct, err := s.repository.GetProduct(ctx, product.ID, tenantID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get existing product: %w", err)
+func (s *ProductService) GetProduct(ctx context.Context, productID, supplierID, tenantID string) (*models.Product, error) {
+	s.logger.DebugWithContext(ctx, "Запрос на получение продукта",
+		interfaces.LogField{Key: "product_id", Value: productID},
+		interfaces.LogField{Key: "supplier_id", Value: supplierID},
+		interfaces.LogField{Key: "tenant_id", Value: tenantID},
+	)
+
+	cacheKey := fmt.Sprintf("product:%s:%s:%s", tenantID, supplierID, productID)
+
+	cachedData, cacheErr := s.cache.GetWithTenant(ctx, cacheKey, tenantID)
+	if cacheErr == nil && cachedData != nil {
+		var product models.Product
+		if unmarshalErr := json.Unmarshal(cachedData, &product); unmarshalErr == nil {
+			s.logger.DebugWithContext(ctx, "Продукт получен из кэша",
+				interfaces.LogField{Key: "product_id", Value: productID},
+			)
+			return &product, nil
+		} else {
+			s.logger.WarnWithContext(ctx, "Ошибка десериализации продукта из кэша",
+				interfaces.LogField{Key: "error", Value: unmarshalErr.Error()},
+			)
+		}
+	} else if cacheErr != nil && !errors.Is(cacheErr, interfaces.ErrCacheMiss) {
+		s.logger.WarnWithContext(ctx, "Ошибка чтения из кэша",
+			interfaces.LogField{Key: "error", Value: cacheErr.Error()},
+		)
 	}
 
-	if existingProduct == nil {
-		return nil, errors.New("product not found")
-	}
-
-	// Устанавливаем время обновления
-	now := time.Now().UTC()
-	product.CreatedAt = existingProduct.CreatedAt
-	product.UpdatedAt = now
-
-	// Начинаем транзакцию
-	txCtx, err := s.repository.(postgres.Port).BeginTx(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to begin transaction: %w", err)
-	}
-
-	// Сохраняем обновленный продукт
-	err = s.repository.SaveProduct(txCtx, product, tenantID)
-	if err != nil {
-		s.repository.(postgres.Port).RollbackTx(txCtx)
-		return nil, fmt.Errorf("failed to update product: %w", err)
-	}
-
-	// Создаем запись в истории изменений
-	historyRecord := &models.ProductHistoryRecord{
-		ID:            uuid.New().String(),
-		ProductID:     product.ID,
-		ChangeType:    "update",
-		Before:        existingProduct,
-		After:         product,
-		ChangedBy:     userID,
-		ChangedAt:     time.Now().Unix(),
-		ChangeComment: comment,
-	}
-
-	err = s.repository.SaveHistoryRecord(txCtx, historyRecord, tenantID)
-	if err != nil {
-		s.repository.(postgres.Port).RollbackTx(txCtx)
-		return nil, fmt.Errorf("failed to save history record: %w", err)
-	}
-
-	// Фиксируем транзакцию
-	err = s.repository.(postgres.Port).CommitTx(txCtx)
-	if err != nil {
-		s.repository.(postgres.Port).RollbackTx(txCtx)
-		return nil, fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	return product, nil
-}
-
-// GetProduct получает продукт по ID
-func (s *ProductService) GetProduct(ctx context.Context, productID string, tenantID string) (*models.Product, error) {
-	product, err := s.repository.GetProduct(ctx, productID, tenantID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get product: %w", err)
+	product, dbErr := s.repository.GetProductBySupplier(ctx, productID, supplierID, tenantID)
+	if dbErr != nil {
+		s.logger.ErrorWithContext(ctx, "Ошибка получения продукта из хранилища",
+			interfaces.LogField{Key: "error", Value: dbErr.Error()},
+			interfaces.LogField{Key: "product_id", Value: productID},
+		)
+		return nil, fmt.Errorf("failed to get product: %w", dbErr)
 	}
 
 	if product == nil {
-		return nil, nil // Продукт не найден
+		s.logger.InfoWithContext(ctx, "Продукт не найден",
+			interfaces.LogField{Key: "product_id", Value: productID},
+			interfaces.LogField{Key: "supplier_id", Value: supplierID},
+		)
+		return nil, nil
 	}
+
+	productJSON, marshalErr := json.Marshal(product)
+	if marshalErr == nil {
+		if cacheSetErr := s.cache.SetWithTenant(ctx, cacheKey, productJSON, tenantID, 30*time.Minute); cacheSetErr != nil {
+			s.logger.WarnWithContext(ctx, "Ошибка сохранения продукта в кэш",
+				interfaces.LogField{Key: "error", Value: cacheSetErr.Error()},
+			)
+		}
+	} else {
+		s.logger.WarnWithContext(ctx, "Ошибка сериализации продукта для кэша",
+			interfaces.LogField{Key: "error", Value: marshalErr.Error()},
+		)
+	}
+
+	s.logger.DebugWithContext(ctx, "Продукт успешно получен",
+		interfaces.LogField{Key: "product_id", Value: productID},
+	)
 
 	return product, nil
 }
 
-// DeleteProduct удаляет продукт
-func (s *ProductService) DeleteProduct(ctx context.Context, productID string, tenantID string, userID string, comment string) error {
-	// Получаем текущую версию продукта для истории
-	existingProduct, err := s.repository.GetProduct(ctx, productID, tenantID)
-	if err != nil {
-		return fmt.Errorf("failed to get existing product: %w", err)
+func (s *ProductService) UpdateProduct(ctx context.Context, product *models.Product) (*models.Product, error) {
+	if product.ID == "" || product.TenantID == "" {
+		return nil, errors.New("product ID and tenant ID cannot be empty")
 	}
 
-	if existingProduct == nil {
-		return errors.New("product not found")
+	product.UpdatedAt = time.Now().UTC()
+
+	err := s.repository.SaveProduct(ctx, product)
+	if err != nil {
+		s.logger.ErrorWithContext(ctx, "Failed to update product",
+			interfaces.LogField{Key: "error", Value: err.Error()},
+			interfaces.LogField{Key: "product_id", Value: product.ID},
+		)
+		return nil, fmt.Errorf("failed to update product: %w", err)
 	}
 
-	// Начинаем транзакцию
-	txCtx, err := s.repository.(postgres.Port).BeginTx(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
+	cacheKey := fmt.Sprintf("product:%s:%s:%s", product.TenantID, product.SupplierID, product.ID)
+	_ = s.cache.DeleteWithTenant(ctx, cacheKey, product.TenantID)
+
+	event := struct {
+		EventType string                 `json:"event_type"`
+		TenantID  string                 `json:"tenant_id"`
+		Payload   map[string]interface{} `json:"payload"`
+	}{
+		EventType: messaging.ProductUpdatedEvent,
+		TenantID:  product.TenantID,
+		Payload: map[string]interface{}{
+			"product_id":  product.ID,
+			"supplier_id": product.SupplierID,
+		},
 	}
 
-	// Удаляем продукт
-	err = s.repository.DeleteProduct(txCtx, productID, tenantID)
+	eventData, _ := json.Marshal(event)
+	_ = s.messaging.Publish(ctx, "product-events", eventData)
+
+	return product, nil
+}
+
+func (s *ProductService) DeleteProduct(ctx context.Context, productID, supplierID, tenantID string) error {
+	if productID == "" || tenantID == "" {
+		return errors.New("product ID and tenant ID cannot be empty")
+	}
+
+	err := s.repository.DeleteProduct(ctx, productID, tenantID)
 	if err != nil {
-		s.repository.(postgres.Port).RollbackTx(txCtx)
+		s.logger.ErrorWithContext(ctx, "Failed to delete product",
+			interfaces.LogField{Key: "error", Value: err.Error()},
+			interfaces.LogField{Key: "product_id", Value: productID},
+		)
 		return fmt.Errorf("failed to delete product: %w", err)
 	}
 
-	// Создаем запись в истории изменений
-	historyRecord := &models.ProductHistoryRecord{
-		ID:            uuid.New().String(),
-		ProductID:     productID,
-		ChangeType:    "delete",
-		Before:        existingProduct,
-		ChangedBy:     userID,
-		ChangedAt:     time.Now().Unix(),
-		ChangeComment: comment,
+	cacheKey := fmt.Sprintf("product:%s:%s:%s", tenantID, supplierID, productID)
+	_ = s.cache.DeleteWithTenant(ctx, cacheKey, tenantID)
+
+	_ = s.cache.DeleteByPatternWithTenant(ctx, "products:list:*", tenantID)
+
+	event := struct {
+		EventType string                 `json:"event_type"`
+		TenantID  string                 `json:"tenant_id"`
+		Payload   map[string]interface{} `json:"payload"`
+	}{
+		EventType: messaging.ProductDeletedEvent,
+		TenantID:  tenantID,
+		Payload: map[string]interface{}{
+			"product_id":  productID,
+			"supplier_id": supplierID,
+		},
 	}
 
-	err = s.repository.SaveHistoryRecord(txCtx, historyRecord, tenantID)
-	if err != nil {
-		s.repository.(postgres.Port).RollbackTx(txCtx)
-		return fmt.Errorf("failed to save history record: %w", err)
-	}
-
-	// Фиксируем транзакцию
-	err = s.repository.(postgres.Port).CommitTx(txCtx)
-	if err != nil {
-		s.repository.(postgres.Port).RollbackTx(txCtx)
-		return fmt.Errorf("failed to commit transaction: %w", err)
-	}
+	eventData, _ := json.Marshal(event)
+	_ = s.messaging.Publish(ctx, "product-events", eventData)
 
 	return nil
 }
 
-// ListProducts получает список продуктов с фильтрацией и пагинацией
-func (s *ProductService) ListProducts(ctx context.Context, tenantID string, filter *models.ProductFilter, page, pageSize int) ([]*models.Product, int, error) {
-	// Преобразуем фильтр в map для использования в репозитории
-	filterMap := filter.ToMap()
+func (s *ProductService) ListProducts(ctx context.Context, tenantID string, filters map[string]interface{}, page, pageSize int) ([]*models.Product, int, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 20
+	} else if pageSize > 100 {
+		pageSize = 100
+	}
 
-	// Получаем список продуктов
-	products, total, err := s.repository.ListProducts(ctx, tenantID, filterMap, page, pageSize)
+	if len(filters) == 0 {
+		cacheKey := fmt.Sprintf("products:list:%s:%d:%d", tenantID, page, pageSize)
+		cachedData, err := s.cache.GetWithTenant(ctx, cacheKey, tenantID)
+
+		if err == nil && cachedData != nil {
+			var result struct {
+				Products []*models.Product `json:"products"`
+				Total    int               `json:"total"`
+			}
+
+			if err := json.Unmarshal(cachedData, &result); err == nil {
+				return result.Products, result.Total, nil
+			}
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	products, total, err := s.repository.ListProducts(ctx, tenantID, filters, page, pageSize)
 	if err != nil {
+		s.logger.ErrorWithContext(ctx, "Failed to list products",
+			interfaces.LogField{Key: "error", Value: err.Error()},
+		)
 		return nil, 0, fmt.Errorf("failed to list products: %w", err)
+	}
+
+	if len(filters) == 0 {
+		cacheKey := fmt.Sprintf("products:list:%s:%d:%d", tenantID, page, pageSize)
+		cacheData := struct {
+			Products []*models.Product `json:"products"`
+			Total    int               `json:"total"`
+		}{
+			Products: products,
+			Total:    total,
+		}
+
+		if cacheJSON, err := json.Marshal(cacheData); err == nil {
+			_ = s.cache.SetWithTenant(ctx, cacheKey, cacheJSON, tenantID, 5*time.Minute)
+		}
 	}
 
 	return products, total, nil
 }
 
-// UpdateInventory обновляет информацию об инвентаре продукта
-func (s *ProductService) UpdateInventory(ctx context.Context, inventory *models.ProductInventory, tenantID string) error {
-	// Проверяем существование продукта
-	product, err := s.repository.GetProduct(ctx, inventory.ProductID, tenantID)
-	if err != nil {
-		return fmt.Errorf("failed to get product: %w", err)
-	}
-
-	if product == nil {
-		return errors.New("product not found")
-	}
-
-	// Установка времени обновления
-	inventory.UpdatedAt = time.Now().UTC()
-
-	// Сохраняем информацию об инвентаре
-	err = s.repository.SaveInventory(ctx, inventory, tenantID)
-	if err != nil {
-		return fmt.Errorf("failed to update inventory: %w", err)
-	}
-
-	return nil
-}
-
-// UpdatePrice обновляет информацию о цене продукта
 func (s *ProductService) UpdatePrice(ctx context.Context, price *models.ProductPrice, tenantID string) error {
-	// Проверяем существование продукта
-	product, err := s.repository.GetProduct(ctx, price.ProductID, tenantID)
-	if err != nil {
-		return fmt.Errorf("failed to get product: %w", err)
-	}
-
-	if product == nil {
-		return errors.New("product not found")
-	}
-
-	// Установка времени обновления
 	price.UpdatedAt = time.Now().UTC()
 
-	// Сохраняем информацию о цене
-	err = s.repository.SavePrice(ctx, price, tenantID)
+	err := s.repository.SavePrice(ctx, price, tenantID)
 	if err != nil {
-		return fmt.Errorf("failed to update price: %w", err)
+		return fmt.Errorf("failed to save price: %w", err)
 	}
+
+	cacheKey := fmt.Sprintf("product:%s:%s:%s", tenantID, price.SupplierID, price.ProductID)
+	_ = s.cache.DeleteWithTenant(ctx, cacheKey, tenantID)
 
 	return nil
 }
 
-// AddMedia добавляет медиафайл к продукту
-func (s *ProductService) AddMedia(ctx context.Context, media *models.ProductMedia, tenantID string) error {
-	// Проверяем существование продукта
-	product, err := s.repository.GetProduct(ctx, media.ProductID, tenantID)
+func (s *ProductService) UpdateInventory(ctx context.Context, inventory *models.ProductInventory, tenantID string) error {
+	inventory.UpdatedAt = time.Now().UTC()
+
+	err := s.repository.SaveInventory(ctx, inventory, tenantID)
+	if err != nil {
+		return fmt.Errorf("failed to save inventory: %w", err)
+	}
+
+	cacheKey := fmt.Sprintf("product:%s:%s:%s", tenantID, inventory.SupplierID, inventory.ProductID)
+	_ = s.cache.DeleteWithTenant(ctx, cacheKey, tenantID)
+
+	return nil
+}
+
+func (s *ProductService) SyncProductToMarketplace(ctx context.Context, productID string, marketplaceID int, tenantID string) error {
+	product, err := s.repository.GetProduct(ctx, productID, tenantID)
 	if err != nil {
 		return fmt.Errorf("failed to get product: %w", err)
 	}
-
 	if product == nil {
-		return errors.New("product not found")
+		return fmt.Errorf("product not found: %s", productID)
 	}
 
-	// Генерируем ID для медиафайла, если не задан
-	if media.ID == "" {
-		media.ID = uuid.New().String()
+	event := struct {
+		EventType     string    `json:"event_type"`
+		TenantID      string    `json:"tenant_id"`
+		ProductID     string    `json:"product_id"`
+		MarketplaceID int       `json:"marketplace_id"`
+		Timestamp     time.Time `json:"timestamp"`
+	}{
+		EventType:     "product_marketplace_sync",
+		TenantID:      tenantID,
+		ProductID:     productID,
+		MarketplaceID: marketplaceID,
+		Timestamp:     time.Now().UTC(),
 	}
 
-	// Установка времени создания
-	media.CreatedAt = time.Now().UTC()
-
-	// Сохраняем медиафайл
-	err = s.repository.SaveMedia(ctx, media, tenantID)
-	if err != nil {
-		return fmt.Errorf("failed to add media: %w", err)
-	}
-
-	return nil
+	eventData, _ := json.Marshal(event)
+	return s.messaging.Publish(ctx, "marketplace-sync", eventData)
 }
 
-// GetProductWithRelations получает продукт со всеми связанными данными (цена, инвентарь, медиа)
-func (s *ProductService) GetProductWithRelations(ctx context.Context, productID string, tenantID string) (map[string]interface{}, error) {
-	// Получаем основные данные продукта
-	product, err := s.repository.GetProduct(ctx, productID, tenantID)
+func (s *ProductService) SyncProductsFromSupplier(ctx context.Context, supplierID int, tenantID string) (int, error) {
+	event := struct {
+		EventType  string    `json:"event_type"`
+		TenantID   string    `json:"tenant_id"`
+		SupplierID int       `json:"supplier_id"`
+		Timestamp  time.Time `json:"timestamp"`
+	}{
+		EventType:  "supplier_sync_requested",
+		TenantID:   tenantID,
+		SupplierID: supplierID,
+		Timestamp:  time.Now().UTC(),
+	}
+
+	eventData, _ := json.Marshal(event)
+	err := s.messaging.Publish(ctx, "supplier-sync", eventData)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get product: %w", err)
+		return 0, fmt.Errorf("failed to queue supplier sync: %w", err)
 	}
 
-	if product == nil {
-		return nil, errors.New("product not found")
-	}
-
-	// Получаем данные об инвентаре
-	inventory, err := s.repository.GetInventory(ctx, productID, tenantID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get inventory: %w", err)
-	}
-
-	// Получаем данные о цене
-	price, err := s.repository.GetPrice(ctx, productID, tenantID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get price: %w", err)
-	}
-
-	// Получаем медиафайлы
-	media, err := s.repository.GetMediaByProductID(ctx, productID, tenantID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get media: %w", err)
-	}
-
-	// Преобразуем BaseData из JSON в map
-	var baseData map[string]interface{}
-	if len(product.BaseData) > 0 {
-		err = json.Unmarshal(product.BaseData, &baseData)
-		if err != nil {
-			return nil, fmt.Errorf("failed to unmarshal base data: %w", err)
-		}
-	}
-
-	// Преобразуем Metadata из JSON в map
-	var metadata map[string]interface{}
-	if len(product.Metadata) > 0 {
-		err = json.Unmarshal(product.Metadata, &metadata)
-		if err != nil {
-			return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
-		}
-	}
-
-	// Формируем результат
-	result := map[string]interface{}{
-		"id":          product.ID,
-		"supplier_id": product.SupplierID,
-		"created_at":  product.CreatedAt,
-		"updated_at":  product.UpdatedAt,
-		"base_data":   baseData,
-		"metadata":    metadata,
-	}
-
-	// Добавляем данные об инвентаре, если есть
-	if inventory != nil {
-		result["inventory"] = inventory
-	}
-
-	// Добавляем данные о цене, если есть
-	if price != nil {
-		result["price"] = price
-	}
-
-	// Добавляем медиафайлы, если есть
-	if len(media) > 0 {
-		result["media"] = media
-	}
-
-	return result, nil
+	return 0, nil
 }
 
-// CreateCategory создает новую категорию продуктов
-func (s *ProductService) CreateCategory(ctx context.Context, category *models.ProductCategory, tenantID string) (*models.ProductCategory, error) {
-	// Генерируем ID для новой категории, если не задан
-	if category.ID == "" {
-		category.ID = uuid.New().String()
-	}
-
-	// Если это не корневая категория, проверяем существование родительской категории
-	if category.ParentID != "" {
-		parentCategory, err := s.repository.GetCategory(ctx, category.ParentID, tenantID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get parent category: %w", err)
-		}
-
-		if parentCategory == nil {
-			return nil, errors.New("parent category not found")
-		}
-
-		// Устанавливаем уровень и путь
-		category.Level = parentCategory.Level + 1
-		category.Path = parentCategory.Path + "/" + category.ID
+func (s *ProductService) InvalidateCache(ctx context.Context, key string, tenantID string) error {
+	if key == "" {
+		pattern := fmt.Sprintf("tenant:%s:*", tenantID)
+		return s.cache.DeleteByPattern(ctx, pattern)
+	} else if strings.HasSuffix(key, "*") {
+		return s.cache.DeleteByPatternWithTenant(ctx, key, tenantID)
 	} else {
-		// Корневая категория
-		category.Level = 1
-		category.Path = "/" + category.ID
+		return s.cache.DeleteWithTenant(ctx, key, tenantID)
 	}
-
-	// Сохраняем категорию
-	err := s.repository.SaveCategory(ctx, category, tenantID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to save category: %w", err)
-	}
-
-	return category, nil
-}
-
-// GetCategoryTree получает дерево категорий, начиная с указанной (или корневых категорий)
-func (s *ProductService) GetCategoryTree(ctx context.Context, tenantID string, parentID string, maxDepth int) ([]*models.ProductCategory, error) {
-	// Получаем категории первого уровня
-	categories, err := s.repository.ListCategories(ctx, tenantID, parentID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list categories: %w", err)
-	}
-
-	// Если достигли максимальной глубины или нет подкатегорий, возвращаем результат
-	if maxDepth <= 1 || len(categories) == 0 {
-		return categories, nil
-	}
-
-	// Рекурсивно получаем подкатегории
-	for _, category := range categories {
-		if len(category.SubCategories) > 0 {
-			subCategories, err := s.GetCategoryTree(ctx, tenantID, category.ID, maxDepth-1)
-			if err != nil {
-				return nil, err
-			}
-
-			// Создаем карту для быстрого доступа к подкатегориям
-			subCategoryMap := make(map[string]*models.ProductCategory, len(subCategories))
-			for _, subCategory := range subCategories {
-				subCategoryMap[subCategory.ID] = subCategory
-			}
-
-			// Заполняем подкатегории в правильном порядке из SubCategories
-			var orderedSubCategories []*models.ProductCategory
-			for _, subCategoryID := range category.SubCategories {
-				if subCat, ok := subCategoryMap[subCategoryID]; ok {
-					orderedSubCategories = append(orderedSubCategories, subCat)
-				}
-			}
-
-			// Добавляем новые подкатегории, которых не было в SubCategories
-			for _, subCategory := range subCategories {
-				found := false
-				for _, existingID := range category.SubCategories {
-					if subCategory.ID == existingID {
-						found = true
-						break
-					}
-				}
-				if !found {
-					orderedSubCategories = append(orderedSubCategories, subCategory)
-				}
-			}
-		}
-	}
-
-	return categories, nil
 }

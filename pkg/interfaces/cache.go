@@ -2,7 +2,12 @@ package interfaces
 
 import (
 	"context"
+	"errors"
 	"time"
+)
+
+var (
+	ErrCacheMiss = errors.New("cache miss")
 )
 
 // CachePort определяет интерфейс для работы с системой кэширования
@@ -32,45 +37,7 @@ type CachePort interface {
 	// DeleteByPattern удаляет все значения, соответствующие шаблону
 	// Например, "product:*" удалит все ключи, начинающиеся с "product:"
 	DeleteByPattern(ctx context.Context, pattern string) error
-
-	// DeleteByPatternWithTenant удаляет все значения, соответствующие шаблону с учетом ID арендатора
-	DeleteByPatternWithTenant(ctx context.Context, pattern string, tenantID string) error
-
-	// GetMulti получает несколько значений за один запрос (для оптимизации)
-	// Возвращает map, где ключи - запрошенные ключи, а значения - данные из кэша
-	// Если какой-то ключ не найден, он отсутствует в результирующей map
-	GetMulti(ctx context.Context, keys []string) (map[string][]byte, error)
-
-	// GetMultiWithTenant получает несколько значений за один запрос с учетом ID арендатора
-	GetMultiWithTenant(ctx context.Context, keys []string, tenantID string) (map[string][]byte, error)
-
-	// SetMulti сохраняет несколько значений за один запрос
-	SetMulti(ctx context.Context, items map[string][]byte, expiration time.Duration) error
-
-	// SetMultiWithTenant сохраняет несколько значений за один запрос с учетом ID арендатора
-	SetMultiWithTenant(ctx context.Context, items map[string][]byte, tenantID string, expiration time.Duration) error
-
-	// Increment увеличивает числовое значение ключа на указанную величину
-	// Если ключ не существует, он будет создан со значением delta
-	// Возвращает новое значение
-	Increment(ctx context.Context, key string, delta int64) (int64, error)
-
-	// IncrementWithTenant увеличивает числовое значение ключа с учетом ID арендатора
-	IncrementWithTenant(ctx context.Context, key string, tenantID string, delta int64) (int64, error)
-
-	// Lock пытается получить блокировку с указанным ключом
-	// Возвращает true, если блокировка получена успешно
-	// Может использоваться для распределенных блокировок
-	Lock(ctx context.Context, key string, expiration time.Duration) (bool, error)
-
-	// LockWithTenant пытается получить блокировку с учетом ID арендатора
-	LockWithTenant(ctx context.Context, key string, tenantID string, expiration time.Duration) (bool, error)
-
-	// Unlock освобождает блокировку
-	Unlock(ctx context.Context, key string) error
-
-	// UnlockWithTenant освобождает блокировку с учетом ID арендатора
-	UnlockWithTenant(ctx context.Context, key string, tenantID string) error
+	DeleteByPatternWithTenant(ctx context.Context, pattern, tenantID string) error
 
 	// Close закрывает соединение с системой кэширования
 	Close() error

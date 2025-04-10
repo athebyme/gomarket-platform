@@ -1,7 +1,7 @@
 package utils
 
 import (
-	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -34,14 +34,14 @@ func GenerateConnectionString(
 	if timeout < 0 {
 		return "", ErrStorageInvalidTimeout
 	}
-	if poolSize == "" {
+	if poolSize < 0 {
 		return "", ErrStorageInvalidPoolSize
 	}
 
 	conStr.WriteString("host=")
 	conStr.WriteString(host)
 	conStr.WriteString(" port=")
-	conStr.WriteString(fmt.Sprint(port))
+	conStr.WriteString(strconv.Itoa(port))
 	conStr.WriteString(" user=")
 	conStr.WriteString(user)
 	conStr.WriteString(" password=")
@@ -53,7 +53,7 @@ func GenerateConnectionString(
 	conStr.WriteString(" connect_timeout=")
 	conStr.WriteString(timeout.String())
 	conStr.WriteString(" pool_size=")
-	conStr.WriteString(poolSize)
+	conStr.WriteString(strconv.Itoa(poolSize))
 
 	return conStr.String(), nil
 }

@@ -8,7 +8,7 @@ import (
 // Product представляет модель товара для продажи на маркетплейсе
 type Product struct {
 	ID         string          `json:"id"`
-	SupplierID int             `json:"supplier_id"`
+	SupplierID string          `json:"supplier_id"`
 	TenantID   string          `json:"tenant_id"`
 	BaseData   json.RawMessage `db:"base_data" json:"base_data"`
 	// Metadata хранит в себе информацию, необходимую для системы
