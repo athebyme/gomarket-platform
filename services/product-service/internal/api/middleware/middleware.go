@@ -121,6 +121,20 @@ func Tenant(next http.Handler) http.Handler {
 	})
 }
 
+// Supplier извлекает ID поставщика из заголовка и добавляет его в контекст
+func Supplier(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		supplierID := r.Header.Get("X-Supplier-ID")
+		if supplierID == "" {
+			http.Error(w, "X-Supplier-ID header is required", http.StatusBadRequest)
+			return
+		}
+
+		ctx := context.WithValue(r.Context(), "supplier_id", supplierID)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
 // Auth проверяет аутентификацию по токену
 func Auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

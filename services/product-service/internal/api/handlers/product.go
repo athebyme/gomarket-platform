@@ -2,8 +2,8 @@ package handlers
 
 import (
 	"encoding/json"
-	"github.com/athebyme/gomarket-platform/pkg/dto"
 	"github.com/athebyme/gomarket-platform/pkg/interfaces"
+	"github.com/athebyme/gomarket-platform/product-service/internal/domain/models"
 	"github.com/athebyme/gomarket-platform/product-service/internal/domain/services"
 	"github.com/athebyme/gomarket-platform/product-service/internal/utils"
 	"github.com/go-chi/chi/v5"
@@ -66,13 +66,14 @@ func (h *ProductHandler) GetProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	supplierID, ok := r.Context().Value("supplier_id").(string)
-	if !ok || supplierID == "" {
+	// Получаем supplierID из заголовка (можно также получать из контекста, если есть middleware)
+	supplierID := r.Header.Get("X-Supplier-ID")
+	if supplierID == "" {
 		render.Status(r, http.StatusBadRequest)
 		render.JSON(w, r, errorResponse{
 			Error:   "bad_request",
 			Code:    http.StatusBadRequest,
-			Message: "ID тенанта не указан",
+			Message: "ID поставщика не указан", // Исправлено сообщение об ошибке
 		})
 		return
 	}
@@ -214,9 +215,9 @@ func (h *ProductHandler) CreateProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Декодируем тело запроса
-	var productDTO dto.ProductDTO
-	err := json.NewDecoder(r.Body).Decode(&productDTO)
+	// Декодируем тело запроса в модель Product вместо DTO
+	var product models.Product
+	err := json.NewDecoder(r.Body).Decode(&product)
 	if err != nil {
 		render.Status(r, http.StatusBadRequest)
 		render.JSON(w, r, errorResponse{
@@ -227,8 +228,23 @@ func (h *ProductHandler) CreateProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Валидируем продукт
-	if productDTO.Name == "" {
+	// Устанавливаем tenantID из контекста
+	product.TenantID = tenantID
+
+	// Валидируем продукт - проверяем данные в BaseData
+	var baseData map[string]interface{}
+	if err := json.Unmarshal(product.BaseData, &baseData); err != nil {
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, errorResponse{
+			Error:   "validation_error",
+			Code:    http.StatusBadRequest,
+			Message: "Некорректный формат базовых данных продукта",
+		})
+		return
+	}
+
+	// Проверяем обязательные поля
+	if name, ok := baseData["name"].(string); !ok || name == "" {
 		render.Status(r, http.StatusBadRequest)
 		render.JSON(w, r, errorResponse{
 			Error:   "validation_error",
@@ -238,7 +254,7 @@ func (h *ProductHandler) CreateProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if productDTO.Price <= 0 {
+	if price, ok := baseData["price"].(float64); !ok || price <= 0 {
 		render.Status(r, http.StatusBadRequest)
 		render.JSON(w, r, errorResponse{
 			Error:   "validation_error",
@@ -248,8 +264,8 @@ func (h *ProductHandler) CreateProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Создаем продукт
-	createdProduct, err := h.productService.CreateProduct(r.Context(), &productDTO, tenantID)
+	// Создаем продукт через сервис
+	createdProduct, err := h.productService.CreateProduct(r.Context(), &product)
 	if err != nil {
 		h.logger.ErrorWithContext(r.Context(), "Ошибка создания продукта",
 			interfaces.LogField{Key: "error", Value: err.Error()})
@@ -296,9 +312,9 @@ func (h *ProductHandler) UpdateProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Декодируем тело запроса
-	var productDTO dto.ProductDTO
-	err := json.NewDecoder(r.Body).Decode(&productDTO)
+	// Декодируем тело запроса непосредственно в модель Product
+	var product models.Product
+	err := json.NewDecoder(r.Body).Decode(&product)
 	if err != nil {
 		render.Status(r, http.StatusBadRequest)
 		render.JSON(w, r, errorResponse{
@@ -309,11 +325,24 @@ func (h *ProductHandler) UpdateProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Устанавливаем ID продукта
-	productDTO.ID = productID
+	// Устанавливаем ID продукта и tenantID
+	product.ID = productID
+	product.TenantID = tenantID
 
-	// Валидируем продукт
-	if productDTO.Name == "" {
+	// Валидируем продукт - проверяем данные в BaseData
+	var baseData map[string]interface{}
+	if err := json.Unmarshal(product.BaseData, &baseData); err != nil {
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, errorResponse{
+			Error:   "validation_error",
+			Code:    http.StatusBadRequest,
+			Message: "Некорректный формат базовых данных продукта",
+		})
+		return
+	}
+
+	// Проверяем обязательные поля
+	if name, ok := baseData["name"].(string); !ok || name == "" {
 		render.Status(r, http.StatusBadRequest)
 		render.JSON(w, r, errorResponse{
 			Error:   "validation_error",
@@ -323,7 +352,7 @@ func (h *ProductHandler) UpdateProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if productDTO.Price <= 0 {
+	if price, ok := baseData["price"].(float64); !ok || price <= 0 {
 		render.Status(r, http.StatusBadRequest)
 		render.JSON(w, r, errorResponse{
 			Error:   "validation_error",
@@ -334,7 +363,7 @@ func (h *ProductHandler) UpdateProduct(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Обновляем продукт
-	updatedProduct, err := h.productService.UpdateProduct(r.Context(), &productDTO, tenantID)
+	updatedProduct, err := h.productService.UpdateProduct(r.Context(), &product)
 	if err != nil {
 		h.logger.ErrorWithContext(r.Context(), "Ошибка обновления продукта",
 			interfaces.LogField{Key: "error", Value: err.Error()})
@@ -381,8 +410,20 @@ func (h *ProductHandler) DeleteProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Удаляем продукт
-	err := h.productService.DeleteProduct(r.Context(), productID, tenantID)
+	// Получаем supplierID из заголовка
+	supplierID := r.Header.Get("X-Supplier-ID")
+	if supplierID == "" {
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, errorResponse{
+			Error:   "bad_request",
+			Code:    http.StatusBadRequest,
+			Message: "ID поставщика не указан",
+		})
+		return
+	}
+
+	// Удаляем продукт, передавая все необходимые параметры
+	err := h.productService.DeleteProduct(r.Context(), productID, supplierID, tenantID)
 	if err != nil {
 		h.logger.ErrorWithContext(r.Context(), "Ошибка удаления продукта",
 			interfaces.LogField{Key: "error", Value: err.Error()})

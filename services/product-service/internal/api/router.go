@@ -41,6 +41,7 @@ func SetupRouter(
 		// Middleware для аутентификации и тенанта
 		r.Use(middleware.Auth)
 		r.Use(middleware.Tenant)
+		r.Use(middleware.Supplier) // Добавляем middleware для поставщика
 
 		// Инициализация обработчиков
 		productHandler := handlers.NewProductHandler(productService, logger)

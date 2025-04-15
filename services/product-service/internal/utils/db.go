@@ -50,10 +50,11 @@ func GenerateConnectionString(
 	conStr.WriteString(dbName)
 	conStr.WriteString(" sslmode=")
 	conStr.WriteString(sslMode)
-	conStr.WriteString(" connect_timeout=")
-	conStr.WriteString(timeout.String())
-	conStr.WriteString(" pool_size=")
-	conStr.WriteString(strconv.Itoa(poolSize))
+
+	if timeout > 0 {
+		conStr.WriteString(" connect_timeout=")
+		conStr.WriteString(strconv.Itoa(int(timeout.Seconds())))
+	}
 
 	return conStr.String(), nil
 }

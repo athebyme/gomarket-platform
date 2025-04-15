@@ -151,7 +151,6 @@ services:
       - product-service-network
     restart: unless-stopped
 
-  # API-сервер продуктового сервиса
   product-api:
     build:
       context: .
@@ -164,7 +163,7 @@ services:
       redis:
         condition: service_healthy
       kafka:
-        condition: service_started
+        condition: service_healthy  # Изменено с service_started на service_healthy
     ports:
       - "${API_PORT:-8081}:8080"
     environment:
@@ -187,7 +186,7 @@ services:
       TRACING_ENABLED: 'true'
       TRACING_ENDPOINT: jaeger:6831
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
+      test: [ "CMD", "wget", "-q", "--spider", "http://localhost:8080/health" ]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -196,40 +195,40 @@ services:
       - product-service-network
     restart: unless-stopped
 
-  # Воркер продуктового сервиса
+    # Воркер продуктового сервиса
   product-worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: product-service:latest
-    container_name: product-service-worker
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      kafka:
-        condition: service_started
-    environment:
-      SERVICE_TYPE: worker
-      APP_ENV: ${APP_ENV:-development}
-      LOG_LEVEL: ${LOG_LEVEL:-debug}
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      POSTGRES_DBNAME: ${POSTGRES_DB:-product_db}
-      POSTGRES_SSLMODE: disable
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      REDIS_PASSWORD: ${REDIS_PASSWORD:-redis}
-      KAFKA_BROKERS: kafka:29092
-      KAFKA_GROUP_ID: product-service-worker
-      TRACING_ENABLED: 'true'
-      TRACING_ENDPOINT: jaeger:6831
-    networks:
-      - product-service-network
-    restart: unless-stopped
+      build:
+        context: .
+        dockerfile: Dockerfile
+      image: product-service:latest
+      container_name: product-service-worker
+      depends_on:
+        postgres:
+          condition: service_healthy
+        redis:
+          condition: service_healthy
+        kafka:
+          condition: service_healthy  # Изменено с service_started на service_healthy
+      environment:
+        SERVICE_TYPE: worker
+        APP_ENV: ${APP_ENV:-development}
+        LOG_LEVEL: ${LOG_LEVEL:-debug}
+        POSTGRES_HOST: postgres
+        POSTGRES_PORT: 5432
+        POSTGRES_USER: ${POSTGRES_USER:-postgres}
+        POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+        POSTGRES_DBNAME: ${POSTGRES_DB:-product_db}
+        POSTGRES_SSLMODE: disable
+        REDIS_HOST: redis
+        REDIS_PORT: 6379
+        REDIS_PASSWORD: ${REDIS_PASSWORD:-redis}
+        KAFKA_BROKERS: kafka:29092
+        KAFKA_GROUP_ID: product-service-worker
+        TRACING_ENABLED: 'true'
+        TRACING_ENDPOINT: jaeger:6831
+      networks:
+        - product-service-network
+      restart: unless-stopped
 
 volumes:
   postgres_data:
