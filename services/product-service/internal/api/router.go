@@ -14,7 +14,7 @@ import (
 
 // SetupRouter настраивает маршрутизатор
 func SetupRouter(
-	productService *services.ProductService,
+	productService services.ProductServiceInterface,
 	logger interfaces.LoggerPort,
 	corsAllowedOrigins []string,
 ) *chi.Mux {

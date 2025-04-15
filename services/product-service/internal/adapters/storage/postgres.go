@@ -71,8 +71,8 @@ type ProductStorage struct {
 	pool *pgxpool.Pool
 }
 
-// NewPostgresRepository создает новый экземпляр ProductStorage
-func NewPostgresRepository(ctx context.Context, connectionString string) (*ProductStorage, error) {
+// NewPostgresStorage создает новый экземпляр ProductStorage
+func NewPostgresStorage(ctx context.Context, connectionString string) (*ProductStorage, error) {
 	pool, err := pgxpool.New(ctx, connectionString)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to postgres: %w", err)

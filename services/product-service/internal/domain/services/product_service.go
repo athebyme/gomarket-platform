@@ -366,6 +366,42 @@ func (s *ProductService) SyncProductsFromSupplier(ctx context.Context, supplierI
 	return 0, nil
 }
 
+func (s *ProductService) PublishProductEvent(ctx context.Context, productID string, eventType string) error {
+	event := struct {
+		EventType string    `json:"event_type"`
+		TenantID  string    `json:"tenant_id"`
+		ProductID string    `json:"product_id"`
+		Timestamp time.Time `json:"timestamp"`
+	}{
+		EventType: eventType,
+		TenantID:  ctx.Value("tenant_id").(string),
+		ProductID: productID,
+		Timestamp: time.Now().UTC(),
+	}
+
+	eventData, err := json.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("ошибка сериализации события: %w", err)
+	}
+
+	err = s.messaging.Publish(ctx, "product-events", eventData)
+	if err != nil {
+		s.logger.ErrorWithContext(ctx, "Ошибка публикации события продукта",
+			interfaces.LogField{Key: "event_type", Value: eventType},
+			interfaces.LogField{Key: "product_id", Value: productID},
+			interfaces.LogField{Key: "error", Value: err.Error()},
+		)
+		return fmt.Errorf("ошибка публикации события: %w", err)
+	}
+
+	s.logger.InfoWithContext(ctx, "Событие продукта опубликовано",
+		interfaces.LogField{Key: "event_type", Value: eventType},
+		interfaces.LogField{Key: "product_id", Value: productID},
+	)
+
+	return nil
+}
+
 func (s *ProductService) InvalidateCache(ctx context.Context, key string, tenantID string) error {
 	if key == "" {
 		pattern := fmt.Sprintf("tenant:%s:*", tenantID)

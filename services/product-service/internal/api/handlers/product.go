@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"github.com/athebyme/gomarket-platform/pkg/dto"
 	"github.com/athebyme/gomarket-platform/pkg/interfaces"
-	"github.com/athebyme/gomarket-platform/pkg/models"
+	"github.com/athebyme/gomarket-platform/product-service/internal/domain/services"
 	"github.com/athebyme/gomarket-platform/product-service/internal/utils"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/render"
@@ -14,12 +14,12 @@ import (
 
 // ProductHandler обработчик запросов для продуктов
 type ProductHandler struct {
-	productService models.Service
+	productService services.ProductServiceInterface
 	logger         interfaces.LoggerPort
 }
 
 // NewProductHandler создает новый обработчик продуктов
-func NewProductHandler(productService models.Service, logger interfaces.LoggerPort) *ProductHandler {
+func NewProductHandler(productService services.ProductServiceInterface, logger interfaces.LoggerPort) *ProductHandler {
 	return &ProductHandler{
 		productService: productService,
 		logger:         logger,
@@ -66,8 +66,18 @@ func (h *ProductHandler) GetProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Получаем продукт
-	product, err := h.productService.GetProduct(r.Context(), productID, tenantID)
+	supplierID, ok := r.Context().Value("supplier_id").(string)
+	if !ok || supplierID == "" {
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, errorResponse{
+			Error:   "bad_request",
+			Code:    http.StatusBadRequest,
+			Message: "ID тенанта не указан",
+		})
+		return
+	}
+
+	product, err := h.productService.GetProduct(r.Context(), productID, supplierID, tenantID)
 	if err != nil {
 		h.logger.ErrorWithContext(r.Context(), "Ошибка получения продукта",
 			interfaces.LogField{Key: "error", Value: err.Error()})
@@ -162,8 +172,7 @@ func (h *ProductHandler) ListProducts(w http.ResponseWriter, r *http.Request) {
 		filters["search_query"] = query
 	}
 
-	// Получаем продукты
-	products, total, err := h.productService.ListProducts(r.Context(), filters, page, pageSize, tenantID)
+	products, total, err := h.productService.ListProducts(r.Context(), tenantID, filters, page, pageSize)
 	if err != nil {
 		h.logger.ErrorWithContext(r.Context(), "Ошибка получения списка продуктов",
 			interfaces.LogField{Key: "error", Value: err.Error()})

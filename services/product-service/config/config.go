@@ -55,16 +55,22 @@ type Config struct {
 	}
 
 	Kafka struct {
-		Brokers          []string
-		GroupID          string
-		Topic            string
-		ProducerTopic    string
-		ConsumerTopic    string
-		AutoOffsetReset  string
-		SessionTimeout   time.Duration
-		HeartbeatTimeout time.Duration
-		ReadTimeout      time.Duration
-		WriteTimeout     time.Duration
+		Brokers           []string      `mapstructure:"brokers"`
+		GroupID           string        `mapstructure:"group_id"`
+		ProducerTopic     string        `mapstructure:"producer_topic"`
+		ConsumerTopic     string        `mapstructure:"consumer_topic"`
+		DeadLetterTopic   string        `mapstructure:"dead_letter_topic"`
+		AutoOffsetReset   string        `mapstructure:"auto_offset_reset"`
+		SessionTimeout    time.Duration `mapstructure:"session_timeout"`
+		HeartbeatTimeout  time.Duration `mapstructure:"heartbeat_timeout"`
+		ReadTimeout       time.Duration `mapstructure:"read_timeout"`
+		WriteTimeout      time.Duration `mapstructure:"write_timeout"`
+		MaxRetries        int           `mapstructure:"max_retries"`
+		RetryBackoff      time.Duration `mapstructure:"retry_backoff"`
+		BatchSize         int           `mapstructure:"batch_size"`
+		LingerMs          int           `mapstructure:"linger_ms"`
+		EnableIdempotence bool          `mapstructure:"enable_idempotence"`
+		CompressionType   string        `mapstructure:"compression_type"`
 	}
 
 	Tracing struct {
@@ -78,6 +84,7 @@ type Config struct {
 		Enabled     bool
 		ServiceName string
 		Endpoint    string
+		Port        int `mapstructure:"port"`
 	}
 
 	Security struct {
