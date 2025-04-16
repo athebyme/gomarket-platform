@@ -1,8 +1,8 @@
 go 1.23.1
 
 use (
-    ./services/product-service
-    ./services/supplier-service
-    ./services/marketplace-service
-    ./pkg
+	./pkg
+	./services/marketplace-service
+	./services/product-service
+	./services/supplier-service
 )

@@ -1,0 +1,25 @@
+
+global:
+  scrape_interval: 15s # Как часто опрашивать цели по умолчанию
+  evaluation_interval: 15s # Как часто пересчитывать правила
+
+scrape_configs:
+  # Задача для сбора метрик с самого Prometheus (полезно для отладки)
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Задача для сбора метрик с вашего Product Service API
+  - job_name: 'product-service-api'
+    # Используйте DNS имя сервиса из docker-compose.yml и порт ВНУТРИ контейнера
+    static_configs:
+      - targets: ['product-api:8080'] # 'product-api' - имя сервиса, 8080 - порт приложения
+    # Если метрики на другом пути, укажите metrics_path:
+    # metrics_path: /actuator/prometheus # Пример для Spring Boot
+    # metrics_path: /metrics # Стандартный путь для многих Go библиотек (как promhttp)
+
+  # Если ваш worker тоже предоставляет метрики (например, на другом порту или пути)
+  # - job_name: 'product-service-worker'
+  #   static_configs:
+  #     - targets: ['product-worker:ПОРТ_МЕТРИК_ВОРКЕРА']
+  #   metrics_path: /metrics # Или другой путь

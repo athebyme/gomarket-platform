@@ -1,58 +1,93 @@
-FROM golang:1.19-alpine AS builder
+# Используйте версию Go, соответствующую вашим go.mod файлам
+ARG GO_VERSION=1.23.1
+ARG ALPINE_VERSION=3.20
 
-# Install dependencies
-RUN apk add --no-cache git gcc g++ make musl-dev pkgconfig libc-dev
-RUN apk add --no-cache librdkafka-dev libc6-compat
+# --- Стадия сборки ---
+FROM golang:${GO_VERSION}-alpine${ALPINE_VERSION} AS builder
 
+RUN apk add --no-cache \
+    build-base \
+    git \
+    pkgconfig \
+    librdkafka-dev \
+    openssl-dev \
+    zlib-dev \
+    cyrus-sasl-dev \
+    libc6-compat
 WORKDIR /app
 
-# Copy the entire project
-COPY . .
+# 1. Копируем файлы управления зависимостями ВСЕГО воркспейса
+COPY go.work .
+COPY services/product-service/go.mod services/product-service/go.sum ./services/product-service/
+COPY pkg/go.mod ./pkg/
+# <<< ДОБАВЛЕНИЕ ЗДЕСЬ >>>
+# Копируем go.mod для остальных сервисов из go.work
+# (Предполагаем, что go.sum может отсутствовать)
+COPY services/marketplace-service/go.mod ./services/marketplace-service/
+COPY services/supplier-service/go.mod ./services/supplier-service/
 
-# Create a replacement directive in the product-service go.mod
+# 2. Скачиваем ВСЕ зависимости воркспейса из корня /app
+RUN go mod download
+# (Альтернатива: RUN go work sync)
+
+# 3. Теперь копируем исходный код необходимых модулей
+COPY services/product-service ./services/product-service/
+COPY pkg ./pkg/
+
+# 4. Копируем конфигурацию сервиса
+COPY services/product-service/config /app/config/
+
+# 5. Снова переходим в директорию сервиса для сборки
 WORKDIR /app/services/product-service
-RUN echo "replace github.com/athebyme/gomarket-platform => ../../" >> go.mod
 
-# Now run go mod tidy which should use the local module
-RUN go mod tidy
+# Создаем директорию для бинарников
+RUN mkdir -p /app/bin
 
-# Build the binaries
-RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -o /app/bin/api-server ./cmd/api
-RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -o /app/bin/worker ./cmd/worker
+# Собираем бинарники
+    RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build \
+        -ldflags="-w -s" \
+        -tags musl \
+        -o /app/bin/api-server ./cmd/api
 
-# Финальный образ
-FROM alpine:3.17
+    RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build \
+        -ldflags="-w -s" \
+        -tags musl \
+        -o /app/bin/worker ./cmd/worker
 
-# Установка необходимых зависимостей для запуска
-RUN apk add --no-cache ca-certificates tzdata libc6-compat librdkafka
+# --- Финальная стадия ---
+FROM alpine:${ALPINE_VERSION}
+
+RUN apk add --no-cache \
+    ca-certificates \
+    tzdata \
+    libc6-compat \
+    librdkafka \
+    wget
 
 ENV TZ=Europe/Moscow
 
-# Копирование конфигурации и бинарных файлов
-COPY --from=builder /app/config /app/config
-RUN mkdir -p /app/logs
+WORKDIR /app
+
+# Копируем артефакты из builder'а
 COPY --from=builder /app/bin/api-server /app/api-server
 COPY --from=builder /app/bin/worker /app/worker
+COPY --from=builder /app/config /app/config
+RUN mkdir /app/logs
 
-# Настройка окружения
-ENV APP_ENV=production
-ENV LOG_LEVEL=info
-ENV SERVER_PORT=8080
-
-EXPOSE 8080
-
-# Проверка работоспособности
-HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-    CMD wget -q --spider http://localhost:8080/health || exit 1
-
-# Создание непривилегированного пользователя
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 RUN chown -R appuser:appgroup /app
 
 USER appuser
 
-WORKDIR /app
+ENV APP_ENV=production
+ENV LOG_LEVEL=info
+ENV SERVER_PORT=8080
+ENV SERVICE_TYPE=api
 
-# Запуск сервиса в зависимости от переменной окружения
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD wget -q --spider http://localhost:${SERVER_PORT}/health || exit 1
+
 ENTRYPOINT ["/bin/sh", "-c"]
 CMD ["if [ \"$SERVICE_TYPE\" = \"worker\" ]; then exec /app/worker; else exec /app/api-server; fi"]

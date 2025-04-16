@@ -153,8 +153,8 @@ services:
 
   product-api:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: services/product-service/Dockerfile
     image: product-service:latest
     container_name: product-service-api
     depends_on:
@@ -198,8 +198,8 @@ services:
     # Воркер продуктового сервиса
   product-worker:
       build:
-        context: .
-        dockerfile: Dockerfile
+        context: ../..
+        dockerfile: services/product-service/Dockerfile
       image: product-service:latest
       container_name: product-service-worker
       depends_on:
