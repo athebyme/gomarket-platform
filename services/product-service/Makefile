@@ -86,3 +86,8 @@ test:
 	@echo "Запуск тестов..."
 	go test -v ./...
 	@echo "Тесты завершены."
+
+swagger:
+	@echo "Генерация Swagger документации..."
+	swag init -g cmd/api/main.go -o ./docs
+	@echo "Документация сгенерирована."

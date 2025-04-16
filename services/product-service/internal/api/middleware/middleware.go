@@ -2,10 +2,13 @@ package middleware
 
 import (
 	"context"
+	"fmt"
 	"github.com/athebyme/gomarket-platform/pkg/interfaces"
+	"github.com/athebyme/gomarket-platform/product-service/internal/security"
 	"github.com/google/uuid"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -245,14 +248,208 @@ func Tracing(next http.Handler) http.Handler {
 	})
 }
 
-// RateLimit ограничивает количество запросов
-func RateLimit(requestsPerSecond int) func(http.Handler) http.Handler {
-	// В реальном приложении здесь был бы код для ограничения количества запросов
-	// Например, с использованием алгоритма "token bucket"
+// RateLimiter ограничивает количество запросов с одного IP
+func RateLimiter(requests int, duration time.Duration) func(http.Handler) http.Handler {
+	// TODO: лучше использовать Redis или другое внешнее хранилище
+	type client struct {
+		count    int
+		lastSeen time.Time
+	}
+	clients := make(map[string]*client)
+	mu := &sync.Mutex{}
+
+	go func() {
+		for {
+			time.Sleep(duration)
+			mu.Lock()
+			for ip, c := range clients {
+				if time.Since(c.lastSeen) > duration {
+					delete(clients, ip)
+				}
+			}
+			mu.Unlock()
+		}
+	}()
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Здесь приведена заглушка
+			ip := r.RemoteAddr
+
+			mu.Lock()
+			if _, found := clients[ip]; !found {
+				clients[ip] = &client{0, time.Now()}
+			}
+
+			if time.Since(clients[ip].lastSeen) > duration {
+				clients[ip].count = 0
+				clients[ip].lastSeen = time.Now()
+			}
+
+			clients[ip].count++
+			exceeded := clients[ip].count > requests
+			mu.Unlock()
+
+			if exceeded {
+				w.Header().Set("Retry-After", fmt.Sprintf("%d", int(duration.Seconds())))
+				http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// JWTAuth проверяет и валидирует JWT токен
+func JWTAuth(jwtManager *security.JWTManager, logger interfaces.LoggerPort) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			authHeader := r.Header.Get("Authorization")
+			if authHeader == "" {
+				http.Error(w, "Authorization header is required", http.StatusUnauthorized)
+				return
+			}
+
+			// Проверяем формат токена
+			parts := strings.Split(authHeader, " ")
+			if len(parts) != 2 || parts[0] != "Bearer" {
+				http.Error(w, "Invalid authorization format", http.StatusUnauthorized)
+				return
+			}
+
+			tokenStr := parts[1]
+			claims, err := jwtManager.Validate(tokenStr)
+			if err != nil {
+				logger.WarnWithContext(r.Context(), "Invalid JWT token",
+					interfaces.LogField{Key: "error", Value: err.Error()})
+
+				if err == security.ErrExpiredToken {
+					http.Error(w, "Token expired", http.StatusUnauthorized)
+				} else {
+					http.Error(w, "Invalid token", http.StatusUnauthorized)
+				}
+				return
+			}
+
+			// Добавляем данные из токена в контекст
+			ctx := context.WithValue(r.Context(), "user_id", claims.UserID)
+			ctx = context.WithValue(ctx, "tenant_id", claims.TenantID)
+			ctx = context.WithValue(ctx, "roles", claims.Roles)
+			ctx = context.WithValue(ctx, "permissions", claims.Permissions)
+			ctx = context.WithValue(ctx, "claims", claims)
+
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+// SecurityHeaders добавляет заголовки безопасности
+func SecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Защита от XSS
+		w.Header().Set("X-XSS-Protection", "1; mode=block")
+		// Запрет MIME-sniffing
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		// Настройка политики CORS
+		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
+		// Content Security Policy
+		w.Header().Set("Content-Security-Policy", "default-src 'self'")
+		// Защита от Clickjacking
+		w.Header().Set("X-Frame-Options", "DENY")
+		// HTTP Strict Transport Security
+		w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		// Referrer Policy
+		w.Header().Set("Referrer-Policy", "no-referrer-when-downgrade")
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// CSRF защита от CSRF-атак
+func CSRF(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Проверяем метод запроса
+		if r.Method != "GET" && r.Method != "HEAD" && r.Method != "OPTIONS" {
+			// Проверка CSRF-токена для небезопасных методов
+			token := r.Header.Get("X-CSRF-Token")
+			referer := r.Header.Get("Referer")
+			origin := r.Header.Get("Origin")
+
+			// Проверка наличия токена
+			if token == "" {
+				http.Error(w, "CSRF token is missing", http.StatusForbidden)
+				return
+			}
+
+			// TODO: Проверка валидности токена (реализация зависит от способа хранения)
+
+			// Проверка referer и origin для защиты от cross-site requests
+			if origin != "" && !strings.HasPrefix(origin, "https://your-domain.com") {
+				http.Error(w, "Invalid origin", http.StatusForbidden)
+				return
+			}
+
+			if referer != "" && !strings.HasPrefix(referer, "https://your-domain.com") {
+				http.Error(w, "Invalid referer", http.StatusForbidden)
+				return
+			}
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// HasRole проверяет наличие определенной роли у пользователя
+func HasRole(role string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			roles, ok := r.Context().Value("roles").([]string)
+			if !ok {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+
+			hasRole := false
+			for _, r := range roles {
+				if r == role || r == "admin" {
+					hasRole = true
+					break
+				}
+			}
+
+			if !hasRole {
+				http.Error(w, "Forbidden", http.StatusForbidden)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// HasPermission проверяет наличие определенного разрешения у пользователя
+func HasPermission(permission string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			permissions, ok := r.Context().Value("permissions").([]string)
+			if !ok {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+
+			hasPermission := false
+			for _, p := range permissions {
+				if p == permission || p == "*" {
+					hasPermission = true
+					break
+				}
+			}
+
+			if !hasPermission {
+				http.Error(w, "Forbidden", http.StatusForbidden)
+				return
+			}
+
 			next.ServeHTTP(w, r)
 		})
 	}

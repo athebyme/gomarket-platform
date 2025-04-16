@@ -40,9 +40,32 @@ type response struct {
 	Meta    interface{} `json:"meta,omitempty"`
 }
 
+// @title Product Service API
+// @version 1.0
+// @description API сервиса управления продуктами для платформы GoMarket
+// @BasePath /api/v1
+// @securityDefinitions.apikey BearerAuth
+// @in header
+// @name Authorization
+
 // GetProduct обрабатывает запрос на получение продукта по ID
+// @Summary Получение продукта
+// @Description Получает детальную информацию о продукте по его ID
+// @Tags products
+// @Accept json
+// @Produce json
+// @Param id path string true "ID продукта"
+// @Param X-Tenant-ID header string true "ID тенанта"
+// @Param X-Supplier-ID header string true "ID поставщика"
+// @Security BearerAuth
+// @Success 200 {object} response{data=models.Product} "Успешный ответ"
+// @Failure 400 {object} errorResponse "Неверный запрос"
+// @Failure 401 {object} errorResponse "Не авторизован"
+// @Failure 403 {object} errorResponse "Запрещено"
+// @Failure 404 {object} errorResponse "Продукт не найден"
+// @Failure 500 {object} errorResponse "Внутренняя ошибка сервера"
+// @Router /products/{id} [get]
 func (h *ProductHandler) GetProduct(w http.ResponseWriter, r *http.Request) {
-	// Получаем ID продукта из URL
 	productID := chi.URLParam(r, "id")
 	if productID == "" {
 		render.Status(r, http.StatusBadRequest)
@@ -54,7 +77,6 @@ func (h *ProductHandler) GetProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Получаем ID тенанта из контекста
 	tenantID, ok := r.Context().Value("tenant_id").(string)
 	if !ok || tenantID == "" {
 		render.Status(r, http.StatusBadRequest)
@@ -66,14 +88,13 @@ func (h *ProductHandler) GetProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Получаем supplierID из заголовка (можно также получать из контекста, если есть middleware)
 	supplierID := r.Header.Get("X-Supplier-ID")
 	if supplierID == "" {
 		render.Status(r, http.StatusBadRequest)
 		render.JSON(w, r, errorResponse{
 			Error:   "bad_request",
 			Code:    http.StatusBadRequest,
-			Message: "ID поставщика не указан", // Исправлено сообщение об ошибке
+			Message: "ID поставщика не указан",
 		})
 		return
 	}
@@ -110,8 +131,30 @@ func (h *ProductHandler) GetProduct(w http.ResponseWriter, r *http.Request) {
 }
 
 // ListProducts обрабатывает запрос на получение списка продуктов
+// @Summary Список продуктов
+// @Description Получает список продуктов с поддержкой пагинации и фильтрации
+// @Tags products
+// @Accept json
+// @Produce json
+// @Param X-Tenant-ID header string true "ID тенанта"
+// @Param page query int false "Номер страницы" default(1) minimum(1)
+// @Param page_size query int false "Размер страницы" default(20) minimum(1) maximum(100)
+// @Param name query string false "Фильтр по имени продукта"
+// @Param description query string false "Фильтр по описанию продукта"
+// @Param supplier_id query string false "Фильтр по ID поставщика"
+// @Param min_price query number false "Минимальная цена"
+// @Param max_price query number false "Максимальная цена"
+// @Param q query string false "Поисковый запрос"
+// @Security BearerAuth
+// @Success 200 {object} response{data=[]models.Product,meta=map[string]interface{}} "Успешный ответ"
+// @Failure 400 {object} errorResponse "Неверный запрос"
+// @Failure 401 {object} errorResponse "Не авторизован"
+// @Failure 403 {object} errorResponse "Запрещено"
+// @Failure 500 {object} errorResponse "Внутренняя ошибка сервера"
+// @Router /products [get]
+
+// ListProducts обрабатывает запрос на получение списка продуктов
 func (h *ProductHandler) ListProducts(w http.ResponseWriter, r *http.Request) {
-	// Получаем ID тенанта из контекста
 	tenantID, ok := r.Context().Value("tenant_id").(string)
 	if !ok || tenantID == "" {
 		render.Status(r, http.StatusBadRequest)
@@ -123,7 +166,6 @@ func (h *ProductHandler) ListProducts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Получаем параметры пагинации
 	page, err := strconv.Atoi(r.URL.Query().Get("page"))
 	if err != nil || page < 1 {
 		page = 1
@@ -134,41 +176,34 @@ func (h *ProductHandler) ListProducts(w http.ResponseWriter, r *http.Request) {
 		pageSize = 20
 	}
 
-	// Получаем параметры фильтрации
 	filters := make(map[string]interface{})
 
-	// Фильтр по имени
 	if name := r.URL.Query().Get("name"); name != "" {
 		filters["name"] = name
 	}
 
-	// Фильтр по описанию
 	if description := r.URL.Query().Get("description"); description != "" {
 		filters["description"] = description
 	}
 
-	// Фильтр по ID поставщика
 	if supplierID := r.URL.Query().Get("supplier_id"); supplierID != "" {
 		if id, err := strconv.Atoi(supplierID); err == nil {
 			filters["supplier_id"] = id
 		}
 	}
 
-	// Фильтр по минимальной цене
 	if minPrice := r.URL.Query().Get("min_price"); minPrice != "" {
 		if price, err := strconv.ParseFloat(minPrice, 64); err == nil {
 			filters["min_price"] = price
 		}
 	}
 
-	// Фильтр по максимальной цене
 	if maxPrice := r.URL.Query().Get("max_price"); maxPrice != "" {
 		if price, err := strconv.ParseFloat(maxPrice, 64); err == nil {
 			filters["max_price"] = price
 		}
 	}
 
-	// Фильтр по поисковому запросу
 	if query := r.URL.Query().Get("q"); query != "" {
 		filters["search_query"] = query
 	}
@@ -186,11 +221,9 @@ func (h *ProductHandler) ListProducts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Создаем пагинацию
 	pagination := utils.NewPagination(page, pageSize, "created_at", true)
 	pagination.SetTotal(int64(total))
 
-	// Возвращаем продукты
 	render.Status(r, http.StatusOK)
 	render.JSON(w, r, response{
 		Success: true,
@@ -202,8 +235,23 @@ func (h *ProductHandler) ListProducts(w http.ResponseWriter, r *http.Request) {
 }
 
 // CreateProduct обрабатывает запрос на создание продукта
+// @Summary Создание продукта
+// @Description Создает новый продукт в системе
+// @Tags products
+// @Accept json
+// @Produce json
+// @Param X-Tenant-ID header string true "ID тенанта"
+// @Param X-Supplier-ID header string true "ID поставщика"
+// @Param product body models.Product true "Данные продукта"
+// @Security BearerAuth
+// @Success 201 {object} response{data=models.Product} "Продукт создан"
+// @Failure 400 {object} errorResponse "Неверный запрос"
+// @Failure 401 {object} errorResponse "Не авторизован"
+// @Failure 403 {object} errorResponse "Запрещено"
+// @Failure 500 {object} errorResponse "Внутренняя ошибка сервера"
+// @Router /products [post]
+// CreateProduct обрабатывает запрос на создание продукта
 func (h *ProductHandler) CreateProduct(w http.ResponseWriter, r *http.Request) {
-	// Получаем ID тенанта из контекста
 	tenantID, ok := r.Context().Value("tenant_id").(string)
 	if !ok || tenantID == "" {
 		render.Status(r, http.StatusBadRequest)
@@ -226,7 +274,6 @@ func (h *ProductHandler) CreateProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Декодируем тело запроса в модель Product вместо DTO
 	var product models.Product
 	err := json.NewDecoder(r.Body).Decode(&product)
 	if err != nil {
@@ -239,11 +286,9 @@ func (h *ProductHandler) CreateProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Устанавливаем tenantID из контекста
 	product.TenantID = tenantID
 	product.SupplierID = supplierID
 
-	// Валидируем продукт - проверяем данные в BaseData
 	var baseData map[string]interface{}
 	if err := json.Unmarshal(product.BaseData, &baseData); err != nil {
 		render.Status(r, http.StatusBadRequest)
@@ -255,7 +300,6 @@ func (h *ProductHandler) CreateProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Проверяем обязательные поля
 	if name, ok := baseData["name"].(string); !ok || name == "" {
 		render.Status(r, http.StatusBadRequest)
 		render.JSON(w, r, errorResponse{
@@ -276,7 +320,6 @@ func (h *ProductHandler) CreateProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Создаем продукт через сервис
 	createdProduct, err := h.productService.CreateProduct(r.Context(), &product)
 	if err != nil {
 		h.logger.ErrorWithContext(r.Context(), "Ошибка создания продукта",
@@ -299,8 +342,23 @@ func (h *ProductHandler) CreateProduct(w http.ResponseWriter, r *http.Request) {
 }
 
 // UpdateProduct обрабатывает запрос на обновление продукта
+// @Summary Обновление продукта
+// @Description Обновляет существующий продукт по его ID
+// @Tags products
+// @Accept json
+// @Produce json
+// @Param id path string true "ID продукта"
+// @Param X-Tenant-ID header string true "ID тенанта"
+// @Param product body models.Product true "Данные продукта"
+// @Security BearerAuth
+// @Success 200 {object} response{data=models.Product} "Продукт обновлен"
+// @Failure 400 {object} errorResponse "Неверный запрос"
+// @Failure 401 {object} errorResponse "Не авторизован"
+// @Failure 403 {object} errorResponse "Запрещено"
+// @Failure 404 {object} errorResponse "Продукт не найден"
+// @Failure 500 {object} errorResponse "Внутренняя ошибка сервера"
+// @Router /products/{id} [put]
 func (h *ProductHandler) UpdateProduct(w http.ResponseWriter, r *http.Request) {
-	// Получаем ID продукта из URL
 	productID := chi.URLParam(r, "id")
 	if productID == "" {
 		render.Status(r, http.StatusBadRequest)
@@ -312,7 +370,6 @@ func (h *ProductHandler) UpdateProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Получаем ID тенанта из контекста
 	tenantID, ok := r.Context().Value("tenant_id").(string)
 	if !ok || tenantID == "" {
 		render.Status(r, http.StatusBadRequest)
@@ -324,7 +381,6 @@ func (h *ProductHandler) UpdateProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Декодируем тело запроса непосредственно в модель Product
 	var product models.Product
 	err := json.NewDecoder(r.Body).Decode(&product)
 	if err != nil {
@@ -337,11 +393,9 @@ func (h *ProductHandler) UpdateProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Устанавливаем ID продукта и tenantID
 	product.ID = productID
 	product.TenantID = tenantID
 
-	// Валидируем продукт - проверяем данные в BaseData
 	var baseData map[string]interface{}
 	if err := json.Unmarshal(product.BaseData, &baseData); err != nil {
 		render.Status(r, http.StatusBadRequest)
@@ -353,7 +407,6 @@ func (h *ProductHandler) UpdateProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Проверяем обязательные поля
 	if name, ok := baseData["name"].(string); !ok || name == "" {
 		render.Status(r, http.StatusBadRequest)
 		render.JSON(w, r, errorResponse{
@@ -374,7 +427,6 @@ func (h *ProductHandler) UpdateProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Обновляем продукт
 	updatedProduct, err := h.productService.UpdateProduct(r.Context(), &product)
 	if err != nil {
 		h.logger.ErrorWithContext(r.Context(), "Ошибка обновления продукта",
@@ -388,7 +440,6 @@ func (h *ProductHandler) UpdateProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Возвращаем обновленный продукт
 	render.Status(r, http.StatusOK)
 	render.JSON(w, r, response{
 		Success: true,
@@ -397,8 +448,23 @@ func (h *ProductHandler) UpdateProduct(w http.ResponseWriter, r *http.Request) {
 }
 
 // DeleteProduct обрабатывает запрос на удаление продукта
+// @Summary Удаление продукта
+// @Description Удаляет продукт по его ID
+// @Tags products
+// @Accept json
+// @Produce json
+// @Param id path string true "ID продукта"
+// @Param X-Tenant-ID header string true "ID тенанта"
+// @Param X-Supplier-ID header string true "ID поставщика"
+// @Security BearerAuth
+// @Success 200 {object} response{data=map[string]interface{}} "Продукт удален"
+// @Failure 400 {object} errorResponse "Неверный запрос"
+// @Failure 401 {object} errorResponse "Не авторизован"
+// @Failure 403 {object} errorResponse "Запрещено"
+// @Failure 404 {object} errorResponse "Продукт не найден"
+// @Failure 500 {object} errorResponse "Внутренняя ошибка сервера"
+// @Router /products/{id} [delete]
 func (h *ProductHandler) DeleteProduct(w http.ResponseWriter, r *http.Request) {
-	// Получаем ID продукта из URL
 	productID := chi.URLParam(r, "id")
 	if productID == "" {
 		render.Status(r, http.StatusBadRequest)
@@ -410,7 +476,6 @@ func (h *ProductHandler) DeleteProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Получаем ID тенанта из контекста
 	tenantID, ok := r.Context().Value("tenant_id").(string)
 	if !ok || tenantID == "" {
 		render.Status(r, http.StatusBadRequest)
@@ -422,7 +487,6 @@ func (h *ProductHandler) DeleteProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Получаем supplierID из заголовка
 	supplierID := r.Header.Get("X-Supplier-ID")
 	if supplierID == "" {
 		render.Status(r, http.StatusBadRequest)
@@ -434,7 +498,6 @@ func (h *ProductHandler) DeleteProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Удаляем продукт, передавая все необходимые параметры
 	err := h.productService.DeleteProduct(r.Context(), productID, supplierID, tenantID)
 	if err != nil {
 		h.logger.ErrorWithContext(r.Context(), "Ошибка удаления продукта",
@@ -448,7 +511,6 @@ func (h *ProductHandler) DeleteProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Возвращаем успешный ответ
 	render.Status(r, http.StatusOK)
 	render.JSON(w, r, response{
 		Success: true,
@@ -460,8 +522,23 @@ func (h *ProductHandler) DeleteProduct(w http.ResponseWriter, r *http.Request) {
 }
 
 // SyncProductToMarketplace синхронизирует продукт с маркетплейсом
+// @Summary Синхронизация с маркетплейсом
+// @Description Синхронизирует продукт с выбранным маркетплейсом
+// @Tags products
+// @Accept json
+// @Produce json
+// @Param id path string true "ID продукта"
+// @Param X-Tenant-ID header string true "ID тенанта"
+// @Param marketplace_id query int true "ID маркетплейса"
+// @Security BearerAuth
+// @Success 200 {object} response{data=map[string]interface{}} "Синхронизация запущена"
+// @Failure 400 {object} errorResponse "Неверный запрос"
+// @Failure 401 {object} errorResponse "Не авторизован"
+// @Failure 403 {object} errorResponse "Запрещено"
+// @Failure 404 {object} errorResponse "Продукт не найден"
+// @Failure 500 {object} errorResponse "Внутренняя ошибка сервера"
+// @Router /products/{id}/sync [post]
 func (h *ProductHandler) SyncProductToMarketplace(w http.ResponseWriter, r *http.Request) {
-	// Получаем ID продукта из URL
 	productID := chi.URLParam(r, "id")
 	if productID == "" {
 		render.Status(r, http.StatusBadRequest)
@@ -473,7 +550,6 @@ func (h *ProductHandler) SyncProductToMarketplace(w http.ResponseWriter, r *http
 		return
 	}
 
-	// Получаем ID тенанта из контекста
 	tenantID, ok := r.Context().Value("tenant_id").(string)
 	if !ok || tenantID == "" {
 		render.Status(r, http.StatusBadRequest)
@@ -485,7 +561,6 @@ func (h *ProductHandler) SyncProductToMarketplace(w http.ResponseWriter, r *http
 		return
 	}
 
-	// Получаем ID маркетплейса из параметров запроса
 	marketplaceIDStr := r.URL.Query().Get("marketplace_id")
 	if marketplaceIDStr == "" {
 		render.Status(r, http.StatusBadRequest)
@@ -508,7 +583,6 @@ func (h *ProductHandler) SyncProductToMarketplace(w http.ResponseWriter, r *http
 		return
 	}
 
-	// Синхронизируем продукт с маркетплейсом
 	err = h.productService.SyncProductToMarketplace(r.Context(), productID, marketplaceID, tenantID)
 	if err != nil {
 		h.logger.ErrorWithContext(r.Context(), "Ошибка синхронизации продукта с маркетплейсом",
@@ -522,7 +596,6 @@ func (h *ProductHandler) SyncProductToMarketplace(w http.ResponseWriter, r *http
 		return
 	}
 
-	// Возвращаем успешный ответ
 	render.Status(r, http.StatusOK)
 	render.JSON(w, r, response{
 		Success: true,

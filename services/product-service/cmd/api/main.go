@@ -13,10 +13,12 @@ import (
 	"github.com/athebyme/gomarket-platform/product-service/internal/adapters/storage"
 	"github.com/athebyme/gomarket-platform/product-service/internal/api"
 	"github.com/athebyme/gomarket-platform/product-service/internal/domain/services"
+	"github.com/athebyme/gomarket-platform/product-service/internal/security"
 	"github.com/athebyme/gomarket-platform/product-service/internal/utils"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -150,7 +152,42 @@ func main() {
 	productService := services.NewProductService(repo, cacheClient, messagingClient, log, txManager)
 	log.Info("Сервис продуктов инициализирован")
 
-	router := api.SetupRouter(productService, log, cfg.Security.CORSAllowOrigins)
+	privateKeyPath := cfg.Security.JWTPrivateKeyPath
+	if privateKeyPath == "" {
+		privateKeyPath = os.Getenv("JWT_PRIVATE_KEY_PATH")
+	}
+
+	publicKeyPath := cfg.Security.JWTPublicKeyPath
+	if publicKeyPath == "" {
+		publicKeyPath = os.Getenv("JWT_PUBLIC_KEY_PATH")
+	}
+
+	log.Info("Загрузка JWT-ключей",
+		interfaces.LogField{Key: "private_key_path", Value: privateKeyPath},
+		interfaces.LogField{Key: "public_key_path", Value: publicKeyPath})
+
+	// Чтение файлов
+	privateKeyPEM, err := ioutil.ReadFile(privateKeyPath)
+	if err != nil {
+		log.Fatal("Ошибка чтения приватного ключа JWT",
+			interfaces.LogField{Key: "error", Value: err.Error()})
+	}
+
+	publicKeyPEM, err := ioutil.ReadFile(publicKeyPath)
+	if err != nil {
+		log.Fatal("Ошибка чтения публичного ключа JWT",
+			interfaces.LogField{Key: "error", Value: err.Error()})
+	}
+
+	// Создание JWT-менеджера
+	jwtManager, err := security.NewJWTManager(privateKeyPEM, publicKeyPEM,
+		cfg.Security.JWTExpirationMin, "gomarket-platform")
+	if err != nil {
+		log.Fatal("Ошибка инициализации JWT менеджера",
+			interfaces.LogField{Key: "error", Value: err.Error()})
+	}
+
+	router := api.SetupRouter(productService, log, cfg.Security.CORSAllowOrigins, jwtManager)
 	log.Info("Маршрутизатор настроен")
 
 	server := &http.Server{

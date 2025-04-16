@@ -89,9 +89,12 @@ type Config struct {
 	}
 
 	Security struct {
-		JWTSecret        string
-		JWTExpirationMin time.Duration
-		CORSAllowOrigins []string
+		JWTSecret         string
+		JWTExpirationMin  time.Duration
+		CORSAllowOrigins  []string
+		JWTPublicKeyPath  string
+		JWTPrivateKeyPath string
+		CSRFSecret        string
 	}
 
 	Resilience struct {
@@ -113,7 +116,7 @@ func Load(configPath string) (*Config, error) {
 
 	var cfg Config
 
-	// Настройка Viper
+	// настройка Viper
 	viper.SetConfigName(configFile)
 	viper.SetConfigType("yaml")
 	viper.AddConfigPath(".")
@@ -123,26 +126,26 @@ func Load(configPath string) (*Config, error) {
 	viper.AutomaticEnv()
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 
-	// Чтение конфигурационного файла
+	// чтение конфигурационного файла
 	if err := viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
 			return nil, fmt.Errorf("ошибка чтения файла конфигурации: %w", err)
 		}
-		// Продолжаем, если файл не найден, будем использовать только переменные окружения
+		// продолжаем, если файл не найден, будем использовать только переменные окружения
 	}
 
-	// Установка значений по умолчанию
+	// установка значений по умолчанию
 	setDefaults()
 
-	// Привязка переменных окружения
+	// привязка переменных окружения
 	bindEnvVariables()
 
-	// Чтение конфигурации в структуру
+	// чтение конфигурации в структуру
 	if err := viper.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("ошибка десериализации конфигурации: %w", err)
 	}
 
-	// Получаем окружение
+	// получаем окружение
 	cfg.ENV = viper.GetString("env")
 	if cfg.ENV == "" {
 		cfg.ENV = "development"
@@ -158,13 +161,13 @@ func Load(configPath string) (*Config, error) {
 
 // setDefaults устанавливает значения по умолчанию
 func setDefaults() {
-	// Основные настройки
+	// основные настройки
 	viper.SetDefault("appName", "product-service")
 	viper.SetDefault("version", "1.0.0")
 	viper.SetDefault("logLevel", "info")
 	viper.SetDefault("env", "development")
 
-	// Настройки сервера
+	// настройки сервера
 	viper.SetDefault("server.host", "0.0.0.0")
 	viper.SetDefault("server.port", 8080)
 	viper.SetDefault("server.readTimeout", "10s")
@@ -172,7 +175,7 @@ func setDefaults() {
 	viper.SetDefault("server.shutdownTimeout", "5s")
 	viper.SetDefault("server.bodyLimit", 10) // 10 МБ
 
-	// Настройки Postgres
+	// настройки Postgres
 	viper.SetDefault("postgres.host", "localhost")
 	viper.SetDefault("postgres.port", 5432)
 	viper.SetDefault("postgres.user", "postgres")
@@ -182,7 +185,7 @@ func setDefaults() {
 	viper.SetDefault("postgres.timeout", "5s")
 	viper.SetDefault("postgres.poolSize", 10)
 
-	// Настройки Redis
+	// настройки Redis
 	viper.SetDefault("redis.host", "localhost")
 	viper.SetDefault("redis.port", 6379)
 	viper.SetDefault("redis.password", "")
@@ -200,7 +203,7 @@ func setDefaults() {
 	viper.SetDefault("redis.maxRetryBackoff", "512ms")
 	viper.SetDefault("redis.defaultExpiration", "10m")
 
-	// Настройки Kafka
+	// настройки Kafka
 	viper.SetDefault("kafka.brokers", []string{"localhost:9092"})
 	viper.SetDefault("kafka.group_id", "product-service")
 	viper.SetDefault("kafka.topic", "products")
@@ -212,18 +215,18 @@ func setDefaults() {
 	viper.SetDefault("kafka.readTimeout", "10s")
 	viper.SetDefault("kafka.writeTimeout", "10s")
 
-	// Настройки трассировки
+	// настройки трассировки
 	viper.SetDefault("tracing.enabled", true)
 	viper.SetDefault("tracing.serviceName", "product-service")
 	viper.SetDefault("tracing.endpoint", "jaeger:6831")
 	viper.SetDefault("tracing.probability", 0.1)
 
-	// Настройки метрик
+	// настройки метрик
 	viper.SetDefault("metrics.enabled", true)
 	viper.SetDefault("metrics.serviceName", "product-service")
 	viper.SetDefault("metrics.endpoint", "/metrics")
 
-	// Настройки безопасности
+	// настройки безопасности
 	viper.SetDefault("security.jwtSecret", "your-secret-key")
 	viper.SetDefault("security.jwtExpirationMin", "60m")
 	viper.SetDefault("security.corsAllowOrigins", []string{"*"})
@@ -238,7 +241,7 @@ func setDefaults() {
 
 // bindEnvVariables привязывает переменные окружения к конфигурации
 func bindEnvVariables() {
-	// Основные настройки
+	// основные настройки
 	viper.BindEnv("appName", "APP_NAME")
 	viper.BindEnv("version", "APP_VERSION")
 	viper.BindEnv("logLevel", "LOG_LEVEL")
@@ -298,17 +301,17 @@ func bindEnvVariables() {
 	viper.BindEnv("tracing.endpoint", "TRACING_ENDPOINT")
 	viper.BindEnv("tracing.probability", "TRACING_PROBABILITY")
 
-	// Настройки метрик
+	// настройки метрик
 	viper.BindEnv("metrics.enabled", "METRICS_ENABLED")
 	viper.BindEnv("metrics.serviceName", "METRICS_SERVICE_NAME")
 	viper.BindEnv("metrics.endpoint", "METRICS_ENDPOINT")
 
-	// Настройки безопасности
+	// настройки безопасности
 	viper.BindEnv("security.jwtSecret", "JWT_SECRET")
 	viper.BindEnv("security.jwtExpirationMin", "JWT_EXPIRATION_MIN")
 	viper.BindEnv("security.corsAllowOrigins", "CORS_ALLOW_ORIGINS")
 
-	// Настройки отказоустойчивости
+	// настройки отказоустойчивости
 	viper.BindEnv("resilience.maxRetries", "RESILIENCE_MAX_RETRIES")
 	viper.BindEnv("resilience.retryWaitTime", "RESILIENCE_RETRY_WAIT_TIME")
 	viper.BindEnv("resilience.circuitTimeout", "RESILIENCE_CIRCUIT_TIMEOUT")

@@ -224,8 +224,8 @@ services:
       # Лучшая практика: Пусть SERVER_PORT из env контролирует внутренний порт.
       - "${API_PORT:-8080}:${SERVER_PORT:-8080}"
     volumes:
-      # Пробрасываем config.yaml внутрь контейнера (только для чтения)
       - ./config/config.yaml:/app/config/config.yaml:ro
+      - ./config/keys:/app/config/keys:ro
     environment:
       SERVICE_TYPE: api
       # Основные настройки приложения - из .env или значения по умолчанию
@@ -260,7 +260,8 @@ services:
 
       # Здесь можно добавить и другие переменные окружения,
       # которые Viper должен будет прочитать (например, JWT_SECRET)
-      JWT_SECRET: ${JWT_SECRET:-crazybobs} # Берите секреты из .env!
+      JWT_PRIVATE_KEY_PATH: /app/config/keys/jwt_private.pem
+      JWT_PUBLIC_KEY_PATH: /app/config/keys/jwt_public.pem
 
     healthcheck:
       # Проверяем healthcheck на порту, который слушает приложение ВНУТРИ контейнера

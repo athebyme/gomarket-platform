@@ -64,10 +64,13 @@ metrics:
   endpoint: /metrics
 
 security:
-  jwtSecret: crazybobs
+  jwtSecret: "crazybobs"
   jwtExpirationMin: 60m
   corsAllowOrigins:
     - "*"
+  jwtPrivateKeyPath: "/app/config/keys/jwt_private.pem"
+  jwtPublicKeyPath: "/app/config/keys/jwt_public.pem"
+  csrfSecret: "your-csrf-secret-key"
 
 resilience:
   maxRetries: 3

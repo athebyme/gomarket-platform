@@ -1,6 +1,6 @@
 # Используйте версию Go, соответствующую вашим go.mod файлам
 ARG GO_VERSION=1.23.1
-ARG ALPINE_VERSION=3.20
+ARG ALPINE_VERSION=3.19
 
 # --- Стадия сборки ---
 FROM golang:${GO_VERSION}-alpine${ALPINE_VERSION} AS builder
