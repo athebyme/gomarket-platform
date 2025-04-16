@@ -1,0 +1,5 @@
+/.idea
+.env
+*.pem
+*.key
+*.base64
