@@ -55,7 +55,7 @@ docker-build:
 
 up:
 	@echo "Запуск всех сервисов с Docker Compose..."
-	docker-compose -f $(DOCKER_COMPOSE_FILE) up -d
+	docker-compose -f $(DOCKER_COMPOSE_FILE) up -d --build
 	@echo "Сервисы запущены. Используйте 'make logs' для просмотра логов."
 
 up-deps:

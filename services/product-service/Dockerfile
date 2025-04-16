@@ -20,15 +20,12 @@ WORKDIR /app
 COPY go.work .
 COPY services/product-service/go.mod services/product-service/go.sum ./services/product-service/
 COPY pkg/go.mod ./pkg/
-# <<< ДОБАВЛЕНИЕ ЗДЕСЬ >>>
-# Копируем go.mod для остальных сервисов из go.work
-# (Предполагаем, что go.sum может отсутствовать)
+
 COPY services/marketplace-service/go.mod ./services/marketplace-service/
 COPY services/supplier-service/go.mod ./services/supplier-service/
 
 # 2. Скачиваем ВСЕ зависимости воркспейса из корня /app
 RUN go mod download
-# (Альтернатива: RUN go work sync)
 
 # 3. Теперь копируем исходный код необходимых модулей
 COPY services/product-service ./services/product-service/
@@ -78,13 +75,6 @@ RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 RUN chown -R appuser:appgroup /app
 
 USER appuser
-
-ENV APP_ENV=production
-ENV LOG_LEVEL=info
-ENV SERVER_PORT=8080
-ENV SERVICE_TYPE=api
-
-EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
     CMD wget -q --spider http://localhost:${SERVER_PORT}/health || exit 1

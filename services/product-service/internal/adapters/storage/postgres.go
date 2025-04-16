@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/athebyme/gomarket-platform/pkg/tx"
+	"github.com/jackc/pgx/v5/pgconn"
 	"time"
 
 	"github.com/athebyme/gomarket-platform/product-service/internal/domain/models"
@@ -83,28 +85,45 @@ func NewPostgresStorage(ctx context.Context, connectionString string) (*ProductS
 	}, nil
 }
 
+func NewPostgresStorageWithPool(ctx context.Context, pool *pgxpool.Pool) (*ProductStorage, error) {
+	if pool == nil {
+		return nil, errors.New("pool is nil")
+	}
+	if err := pool.Ping(ctx); err != nil {
+		return nil, fmt.Errorf("failed to connect to postgres: %w", err)
+	}
+	return &ProductStorage{
+		pool: pool,
+	}, nil
+}
+
 // Close закрывает соединение с БД
 func (r *ProductStorage) Close() error {
 	r.pool.Close()
 	return nil
 }
 
-// getTx получает транзакцию из контекста
-func (r *ProductStorage) getTx(ctx context.Context) pgx.Tx {
-	tx, ok := ctx.Value(txKey).(pgx.Tx)
-	if !ok {
-		return nil
-	}
-	return tx
+type executor interface {
+	Exec(context.Context, string, ...interface{}) (pgconn.CommandTag, error)
+	Query(context.Context, string, ...interface{}) (pgx.Rows, error)
+	QueryRow(context.Context, string, ...interface{}) pgx.Row
 }
 
 // getExecutor возвращает исполнителя запросов (транзакцию или пул)
-func (r *ProductStorage) getExecutor(ctx context.Context) interface{} {
-	tx := r.getTx(ctx)
-	if tx != nil {
-		return tx
+func (r *ProductStorage) getExecutor(ctx context.Context) executor {
+	if tx := r.getTx(ctx); tx != nil {
+		return tx // pgx.Tx реализует нужные методы
 	}
-	return r.pool
+	return r.pool // *pgxpool.Pool тоже реализует нужные методы
+}
+
+// getTx получает транзакцию из контекста
+func (r *ProductStorage) getTx(ctx context.Context) pgx.Tx {
+	txFromCtx, ok := ctx.Value(tx.GetKey()).(pgx.Tx)
+	if !ok {
+		return nil
+	}
+	return txFromCtx
 }
 
 // BeginTx начинает новую транзакцию
@@ -218,11 +237,11 @@ func (r *ProductStorage) GetProductBySupplier(ctx context.Context, productID, su
 	var err error
 	switch e := executor.(type) {
 	case pgx.Tx:
-		row := e.QueryRow(ctx, query, productID, supplierID, tenantID)
+		row := e.QueryRow(ctx, query, productID, tenantID, supplierID)
 		err = row.Scan(&product.ID, &product.SupplierID, &product.BaseData, &product.Metadata,
 			&product.CreatedAt, &product.UpdatedAt)
 	case *pgxpool.Pool:
-		row := e.QueryRow(ctx, query, productID, supplierID, tenantID)
+		row := e.QueryRow(ctx, query, productID, tenantID, supplierID)
 		err = row.Scan(&product.ID, &product.SupplierID, &product.BaseData, &product.Metadata,
 			&product.CreatedAt, &product.UpdatedAt)
 	}

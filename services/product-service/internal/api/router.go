@@ -7,7 +7,6 @@ import (
 	"github.com/athebyme/gomarket-platform/product-service/internal/domain/services"
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"net/http"
 	"time"
 )
@@ -30,20 +29,20 @@ func SetupRouter(
 	r.Use(middleware.Tracing)
 
 	// Маршруты health-check и метрик
-	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+	r.Method(http.MethodGet, "/health", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
-	})
-	r.Get("/metrics", promhttp.Handler().ServeHTTP)
+	}))
+	r.Method(http.MethodHead, "/health", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
 
 	// Маршруты API
 	r.Route("/api/v1", func(r chi.Router) {
-		// Middleware для аутентификации и тенанта
 		r.Use(middleware.Auth)
 		r.Use(middleware.Tenant)
-		r.Use(middleware.Supplier) // Добавляем middleware для поставщика
+		r.Use(middleware.Supplier)
 
-		// Инициализация обработчиков
 		productHandler := handlers.NewProductHandler(productService, logger)
 
 		// Маршруты для продуктов

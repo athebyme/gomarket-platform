@@ -6,16 +6,19 @@ services:
     image: postgres:14
     container_name: product-service-postgres
     environment:
+      # Берем из .env или используем значения по умолчанию
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-product_db}
     ports:
+      # Маппим порт хоста (из .env) на стандартный порт postgres внутри контейнера
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # Путь к init.sql должен быть правильным относительно docker-compose.yml
       - ./migrations/init.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"] # Используем переменную
       interval: 5s
       timeout: 5s
       retries: 5
@@ -28,12 +31,15 @@ services:
     image: redis:7-alpine
     container_name: product-service-redis
     ports:
+      # Маппим порт хоста (из .env) на стандартный порт redis внутри контейнера
       - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
+    # Пароль берется из .env или используется значение по умолчанию 'redis'
     command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis}
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      # Для проверки используем пароль из .env
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis}", "ping"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -53,24 +59,40 @@ services:
     networks:
       - product-service-network
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+    healthcheck:
+      test: echo stat | nc localhost 2181
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   kafka:
     image: confluentinc/cp-kafka:7.3.0
     container_name: product-service-kafka
     depends_on:
-      - zookeeper
+      zookeeper:
+        condition: service_healthy
     ports:
+      # Маппим порт хоста (из .env) на порт 9092 внутри контейнера
       - "${KAFKA_PORT:-9092}:9092"
     environment:
       KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181 # Внутренняя коммуникация
+      # Используем порт из .env для внешнего адреса
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:${KAFKA_PORT:-9092}
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
     healthcheck:
-      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list"]
+      # Проверяем доступность брокера через localhost и порт из .env
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:${KAFKA_PORT:-9092} --list"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -78,47 +100,72 @@ services:
     networks:
       - product-service-network
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
 
-  # Kafka UI для администрирования
+  # Kafka UI
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     container_name: product-service-kafka-ui
     depends_on:
       - kafka
     ports:
-      - "8080:8080"
+      # Маппим порт хоста (из .env) на внутренний порт 8080 Kafka UI
+      - "${KAFKA_UI_PORT:-8090}:8080"
     environment:
       KAFKA_CLUSTERS_0_NAME: local
+      # Kafka UI подключается к Kafka внутри сети Docker
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
-      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181 # Внутренняя коммуникация
     networks:
       - product-service-network
     restart: unless-stopped
 
-  # Jaeger для распределенной трассировки
+  # Jaeger
   jaeger:
     image: jaegertracing/all-in-one:1.42
     container_name: product-service-jaeger
     ports:
+      # Оставляем стандартные порты Jaeger, но UI маппим на порт из .env
       - "5775:5775/udp"
-      - "6831:6831/udp"
+      - "6831:6831/udp" # Agent UDP Thrift Protocol
       - "6832:6832/udp"
       - "5778:5778"
-      - "16686:16686"
-      - "14268:14268"
-      - "14250:14250"
-      - "9411:9411"
+      - "${JAEGER_PORT:-16686}:16686" # Jaeger UI
+      - "14268:14268" # Collector HTTP
+      - "14250:14250" # Collector gRPC
+      - "9411:9411"   # Zipkin Collector
     environment:
-      COLLECTOR_ZIPKIN_HOST_PORT: 9411
+      COLLECTOR_ZIPKIN_HOST_PORT: ":9411"
     networks:
       - product-service-network
     restart: unless-stopped
 
-  # Prometheus для мониторинга
+  # Kafka Topic Setup
+  kafka-setup:
+    image: confluentinc/cp-kafka:7.3.0
+    container_name: product-service-kafka-setup
+    depends_on:
+      kafka:
+        condition: service_healthy
+    volumes:
+      # Путь к скрипту должен быть правильным относительно docker-compose.yml
+      - ./create-topics.sh:/create-topics.sh
+    # Передаем адрес брокера для скрипта
+    command: sh /create-topics.sh kafka:29092
+    networks:
+      - product-service-network
+
+  # Prometheus
   prometheus:
     image: prom/prometheus:v2.42.0
     container_name: product-service-prometheus
     volumes:
+      # Путь к конфигу Prometheus должен быть правильным
       - ./config/prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus_data:/prometheus
     command:
@@ -127,23 +174,27 @@ services:
       - '--web.console.libraries=/usr/share/prometheus/console_libraries'
       - '--web.console.templates=/usr/share/prometheus/consoles'
     ports:
-      - "9090:9090"
+      # Маппим порт хоста (из .env) на стандартный порт Prometheus
+      - "${PROMETHEUS_PORT:-9090}:9090"
     networks:
       - product-service-network
     restart: unless-stopped
 
-  # Grafana для визуализации
+  # Grafana
   grafana:
     image: grafana/grafana:9.4.3
     container_name: product-service-grafana
     depends_on:
       - prometheus
     ports:
-      - "3000:3000"
+      # Маппим порт хоста (из .env) на стандартный порт Grafana
+      - "${GRAFANA_PORT:-3000}:3000"
     volumes:
+      # Пути к конфигурации Grafana должны быть правильными
       - ./config/grafana/provisioning:/etc/grafana/provisioning
       - grafana_data:/var/lib/grafana
     environment:
+      # Берем логин/пароль Grafana из .env
       GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
       GF_USERS_ALLOW_SIGN_UP: 'false'
@@ -151,6 +202,7 @@ services:
       - product-service-network
     restart: unless-stopped
 
+  # API сервиса продуктов
   product-api:
     build:
       context: ../..
@@ -163,30 +215,56 @@ services:
       redis:
         condition: service_healthy
       kafka:
-        condition: service_healthy  # Изменено с service_started на service_healthy
+        condition: service_healthy
     ports:
-      - "${API_PORT:-8081}:8080"
+      # Маппим порт хоста (из .env) на порт, который приложение слушает ВНУТРИ контейнера.
+      # Этот внутренний порт определяется переменной SERVER_PORT (см. environment ниже)
+      # ИЛИ значением из config.yaml, ЕСЛИ SERVER_PORT не задана в .env
+      # По умолчанию маппим внешний API_PORT на внутренний 8080, если SERVER_PORT не переопределена в .env
+      # Лучшая практика: Пусть SERVER_PORT из env контролирует внутренний порт.
+      - "${API_PORT:-8080}:${SERVER_PORT:-8080}"
+    volumes:
+      # Пробрасываем config.yaml внутрь контейнера (только для чтения)
+      - ./config/config.yaml:/app/config/config.yaml:ro
     environment:
       SERVICE_TYPE: api
+      # Основные настройки приложения - из .env или значения по умолчанию
       APP_ENV: ${APP_ENV:-development}
       LOG_LEVEL: ${LOG_LEVEL:-debug}
-      SERVER_HOST: 0.0.0.0
-      SERVER_PORT: 8080
+      # ПОРТ, который приложение будет слушать ВНУТРИ контейнера.
+      # Viper прочитает это и переопределит значение из config.yaml
+      # Если SERVER_PORT не задан в .env, Viper возьмет значение из config.yaml или свой default.
+      # Мы все равно передаем его здесь, чтобы порт в `ports:` выше соответствовал.
+      SERVER_PORT: ${SERVER_PORT:-8080} # Важно: Используйте одну и ту же переменную/значение по умолчанию здесь и в `ports:`
+      SERVER_HOST: 0.0.0.0 # Обычно не меняется в контейнере
+
+      # Настройки подключения к другим сервисам (используем имена сервисов Docker)
       POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
+      POSTGRES_PORT: 5432 # Внутренний порт Postgres
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DBNAME: ${POSTGRES_DB:-product_db}
-      POSTGRES_SSLMODE: disable
+      POSTGRES_SSLMODE: disable # Или возьмите из .env, если нужно: ${POSTGRES_SSLMODE:-disable}
+
       REDIS_HOST: redis
-      REDIS_PORT: 6379
+      REDIS_PORT: 6379 # Внутренний порт Redis
       REDIS_PASSWORD: ${REDIS_PASSWORD:-redis}
+
+      # Kafka брокеры - используем внутренний адрес Docker
       KAFKA_BROKERS: kafka:29092
-      KAFKA_GROUP_ID: product-service
-      TRACING_ENABLED: 'true'
-      TRACING_ENDPOINT: jaeger:6831
+      KAFKA_GROUP_ID: product-service # Или из .env: ${KAFKA_GROUP_ID:-product-service}
+
+      # Трассировка (может быть переопределено через .env)
+      TRACING_ENABLED: ${TRACING_ENABLED:-true}
+      TRACING_ENDPOINT: jaeger:6831 # Внутренний адрес Jaeger
+
+      # Здесь можно добавить и другие переменные окружения,
+      # которые Viper должен будет прочитать (например, JWT_SECRET)
+      JWT_SECRET: ${JWT_SECRET:-crazybobs} # Берите секреты из .env!
+
     healthcheck:
-      test: [ "CMD", "wget", "-q", "--spider", "http://localhost:8080/health" ]
+      # Проверяем healthcheck на порту, который слушает приложение ВНУТРИ контейнера
+      test: [ "CMD", "wget", "-q", "--spider", "http://localhost:${SERVER_PORT:-8080}/health" ]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -195,40 +273,53 @@ services:
       - product-service-network
     restart: unless-stopped
 
-    # Воркер продуктового сервиса
+  # Воркер продуктового сервиса
   product-worker:
-      build:
-        context: ../..
-        dockerfile: services/product-service/Dockerfile
-      image: product-service:latest
-      container_name: product-service-worker
-      depends_on:
-        postgres:
-          condition: service_healthy
-        redis:
-          condition: service_healthy
-        kafka:
-          condition: service_healthy  # Изменено с service_started на service_healthy
-      environment:
-        SERVICE_TYPE: worker
-        APP_ENV: ${APP_ENV:-development}
-        LOG_LEVEL: ${LOG_LEVEL:-debug}
-        POSTGRES_HOST: postgres
-        POSTGRES_PORT: 5432
-        POSTGRES_USER: ${POSTGRES_USER:-postgres}
-        POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-        POSTGRES_DBNAME: ${POSTGRES_DB:-product_db}
-        POSTGRES_SSLMODE: disable
-        REDIS_HOST: redis
-        REDIS_PORT: 6379
-        REDIS_PASSWORD: ${REDIS_PASSWORD:-redis}
-        KAFKA_BROKERS: kafka:29092
-        KAFKA_GROUP_ID: product-service-worker
-        TRACING_ENABLED: 'true'
-        TRACING_ENDPOINT: jaeger:6831
-      networks:
-        - product-service-network
-      restart: unless-stopped
+    build:
+      context: ../..
+      dockerfile: services/product-service/Dockerfile
+    image: product-service:latest
+    container_name: product-service-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-setup:
+        condition: service_completed_successfully
+    volumes:
+      # Также пробрасываем config.yaml
+      - ./config/config.yaml:/app/config/config.yaml:ro
+    environment:
+      SERVICE_TYPE: worker
+      # Настройки, аналогичные API, но без серверных (если не нужны)
+      APP_ENV: ${APP_ENV:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DBNAME: ${POSTGRES_DB:-product_db}
+      POSTGRES_SSLMODE: disable # ${POSTGRES_SSLMODE:-disable}
+
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-redis}
+
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_GROUP_ID: product-service-worker # Уникальный для воркера, или из .env: ${KAFKA_WORKER_GROUP_ID:-product-service-worker}
+
+      TRACING_ENABLED: ${TRACING_ENABLED:-true}
+      TRACING_ENDPOINT: jaeger:6831
+
+      JWT_SECRET: ${JWT_SECRET:-crazybobs} # Если воркеру нужен тот же секрет
+
+    networks:
+      - product-service-network
+    restart: unless-stopped
 
 volumes:
   postgres_data:

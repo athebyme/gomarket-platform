@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"github.com/spf13/viper"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -56,7 +57,7 @@ type Config struct {
 
 	Kafka struct {
 		Brokers           []string      `mapstructure:"brokers"`
-		GroupID           string        `mapstructure:"group_id"`
+		GroupID           string        `mapstructure:"groupID"`
 		ProducerTopic     string        `mapstructure:"producer_topic"`
 		ConsumerTopic     string        `mapstructure:"consumer_topic"`
 		DeadLetterTopic   string        `mapstructure:"dead_letter_topic"`
@@ -104,6 +105,7 @@ type Config struct {
 
 // Load загружает конфигурацию из файла и переменных окружения
 func Load(configPath string) (*Config, error) {
+	viper.Reset()
 	configFile := "config"
 	if configPath != "" {
 		configFile = configPath
@@ -148,6 +150,8 @@ func Load(configPath string) (*Config, error) {
 			cfg.ENV = envVar
 		}
 	}
+
+	log.Printf("Загружен файл конфигурации: %s", viper.ConfigFileUsed())
 
 	return &cfg, nil
 }
@@ -198,7 +202,7 @@ func setDefaults() {
 
 	// Настройки Kafka
 	viper.SetDefault("kafka.brokers", []string{"localhost:9092"})
-	viper.SetDefault("kafka.groupID", "product-service")
+	viper.SetDefault("kafka.group_id", "product-service")
 	viper.SetDefault("kafka.topic", "products")
 	viper.SetDefault("kafka.producerTopic", "products-producer")
 	viper.SetDefault("kafka.consumerTopic", "products-consumer")
@@ -240,7 +244,7 @@ func bindEnvVariables() {
 	viper.BindEnv("logLevel", "LOG_LEVEL")
 	viper.BindEnv("env", "APP_ENV")
 
-	// Настройки сервера
+	// сервер
 	viper.BindEnv("server.host", "SERVER_HOST")
 	viper.BindEnv("server.port", "SERVER_PORT")
 	viper.BindEnv("server.readTimeout", "SERVER_READ_TIMEOUT")
@@ -248,7 +252,7 @@ func bindEnvVariables() {
 	viper.BindEnv("server.shutdownTimeout", "SERVER_SHUTDOWN_TIMEOUT")
 	viper.BindEnv("server.bodyLimit", "SERVER_BODY_LIMIT")
 
-	// Настройки Postgres
+	// Postgres
 	viper.BindEnv("postgres.host", "POSTGRES_HOST")
 	viper.BindEnv("postgres.port", "POSTGRES_PORT")
 	viper.BindEnv("postgres.user", "POSTGRES_USER")
@@ -258,7 +262,7 @@ func bindEnvVariables() {
 	viper.BindEnv("postgres.timeout", "POSTGRES_TIMEOUT")
 	viper.BindEnv("postgres.poolSize", "POSTGRES_POOL_SIZE")
 
-	// Настройки Redis
+	// Redis
 	viper.BindEnv("redis.host", "REDIS_HOST")
 	viper.BindEnv("redis.port", "REDIS_PORT")
 	viper.BindEnv("redis.password", "REDIS_PASSWORD")
@@ -276,7 +280,7 @@ func bindEnvVariables() {
 	viper.BindEnv("redis.maxRetryBackoff", "REDIS_MAX_RETRY_BACKOFF")
 	viper.BindEnv("redis.defaultExpiration", "REDIS_DEFAULT_EXPIRATION")
 
-	// Настройки Kafka
+	// Kafka
 	viper.BindEnv("kafka.brokers", "KAFKA_BROKERS")
 	viper.BindEnv("kafka.groupID", "KAFKA_GROUP_ID")
 	viper.BindEnv("kafka.topic", "KAFKA_TOPIC")
@@ -288,7 +292,7 @@ func bindEnvVariables() {
 	viper.BindEnv("kafka.readTimeout", "KAFKA_READ_TIMEOUT")
 	viper.BindEnv("kafka.writeTimeout", "KAFKA_WRITE_TIMEOUT")
 
-	// Настройки трассировки
+	// трассировка
 	viper.BindEnv("tracing.enabled", "TRACING_ENABLED")
 	viper.BindEnv("tracing.serviceName", "TRACING_SERVICE_NAME")
 	viper.BindEnv("tracing.endpoint", "TRACING_ENDPOINT")

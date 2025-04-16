@@ -47,7 +47,8 @@ func NewKafkaMessaging(
 		return nil, fmt.Errorf("не указаны брокеры Kafka")
 	}
 	if groupID == "" {
-		return nil, fmt.Errorf("не указан GroupID")
+		logger.Warn("GroupID не указан, используется значение по умолчанию: product-service-worker")
+		groupID = "product-service-worker"
 	}
 
 	producer, err := kafka.NewProducer(&kafka.ConfigMap{
@@ -147,8 +148,8 @@ func (k *KafkaMessaging) Subscribe(ctx context.Context, topic string, handler in
 		"heartbeat.interval.ms":   10000,
 		"fetch.min.bytes":         1,
 		"fetch.max.bytes":         52428800, // 50MB
-		"fetch.max.wait.ms":       500,
-		"isolation.level":         "read_committed", // чтение только подтвержденных транзакций
+		// "fetch.max.wait.ms":    500,      // Закомментировано
+		"isolation.level": "read_committed",
 	})
 	if err != nil {
 		k.contextsMutex.Lock()
@@ -158,14 +159,52 @@ func (k *KafkaMessaging) Subscribe(ctx context.Context, topic string, handler in
 		return nil, fmt.Errorf("ошибка создания Kafka consumer: %w", err)
 	}
 
-	err = consumer.Subscribe(topic, nil)
-	if err != nil {
+	// Обработка подписки с повторными попытками
+	subscribed := false
+	maxRetries := 10
+	retryDelay := 5 * time.Second
+
+	for attempt := 0; attempt < maxRetries && !subscribed; attempt++ {
+		err = consumer.Subscribe(topic, nil)
+		if err == nil {
+			subscribed = true
+			break
+		}
+
+		// Если ошибка связана с отсутствием топика
+		if strings.Contains(err.Error(), "Unknown topic") {
+			k.logger.Warn("Топик не существует, повторная попытка через несколько секунд",
+				interfaces.LogField{Key: "topic", Value: topic},
+				interfaces.LogField{Key: "attempt", Value: attempt + 1},
+				interfaces.LogField{Key: "max_attempts", Value: maxRetries})
+
+			// Ждем несколько секунд перед повторной попыткой
+			select {
+			case <-time.After(retryDelay):
+				// Продолжаем и пробуем снова
+			case <-consumerCtx.Done():
+				// Контекст отменен, прекращаем попытки
+				consumer.Close()
+				return nil, fmt.Errorf("контекст отменен во время попыток подписки")
+			}
+		} else {
+			// Если это другая ошибка, возвращаем её
+			consumer.Close()
+			k.contextsMutex.Lock()
+			delete(k.consumerContexts, consumerID)
+			k.contextsMutex.Unlock()
+			cancel()
+			return nil, fmt.Errorf("ошибка подписки на топик %s: %w", topic, err)
+		}
+	}
+
+	if !subscribed {
 		consumer.Close()
 		k.contextsMutex.Lock()
 		delete(k.consumerContexts, consumerID)
 		k.contextsMutex.Unlock()
 		cancel()
-		return nil, fmt.Errorf("ошибка подписки на топик %s: %w", topic, err)
+		return nil, fmt.Errorf("не удалось подписаться на топик %s после %d попыток", topic, maxRetries)
 	}
 
 	k.consumersMutex.Lock()

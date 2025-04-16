@@ -215,6 +215,17 @@ func (h *ProductHandler) CreateProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	supplierID, ok := r.Context().Value("supplier_id").(string)
+	if !ok || supplierID == "" {
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, errorResponse{
+			Error:   "bad_request",
+			Code:    http.StatusBadRequest,
+			Message: "ID поставщика не указан",
+		})
+		return
+	}
+
 	// Декодируем тело запроса в модель Product вместо DTO
 	var product models.Product
 	err := json.NewDecoder(r.Body).Decode(&product)
@@ -230,6 +241,7 @@ func (h *ProductHandler) CreateProduct(w http.ResponseWriter, r *http.Request) {
 
 	// Устанавливаем tenantID из контекста
 	product.TenantID = tenantID
+	product.SupplierID = supplierID
 
 	// Валидируем продукт - проверяем данные в BaseData
 	var baseData map[string]interface{}

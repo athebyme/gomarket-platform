@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/athebyme/gomarket-platform/pkg/tx"
 	"strings"
 	"time"
 
@@ -40,36 +41,59 @@ type ProductService struct {
 	cache      interfaces.CachePort
 	messaging  interfaces.MessagingPort
 	logger     interfaces.LoggerPort
+	txManager  tx.TxManager
 }
 
 // NewProductService создает новый экземпляр ProductService
 func NewProductService(
-	repository postgres.ProductStoragePort,
+	repo postgres.ProductStoragePort,
 	cache interfaces.CachePort,
-	messaging interfaces.MessagingPort,
-	logger interfaces.LoggerPort,
-) ProductServiceInterface {
+	msg interfaces.MessagingPort,
+	log interfaces.LoggerPort,
+	txMgr tx.TxManager,
+) *ProductService {
 	return &ProductService{
-		repository: repository,
+		repository: repo,
 		cache:      cache,
-		messaging:  messaging,
-		logger:     logger,
+		messaging:  msg,
+		logger:     log,
+		txManager:  txMgr,
 	}
 }
 
 func (s *ProductService) CreateProduct(ctx context.Context, product *models.Product) (*models.Product, error) {
-	if product.ID == "" {
-		product.ID = uuid.New().String()
-	}
+	var createdProduct *models.Product
 
-	now := time.Now().UTC()
-	product.CreatedAt = now
-	product.UpdatedAt = now
+	err := s.txManager.Do(ctx, func(txCtx context.Context) error {
+		if product.ID == "" {
+			product.ID = uuid.New().String()
+		}
+		now := time.Now().UTC()
+		product.CreatedAt = now
+		product.UpdatedAt = now
 
-	err := s.repository.SaveProduct(ctx, product)
+		if err := s.repository.SaveProduct(txCtx, product); err != nil {
+			s.logger.ErrorWithContext(txCtx, "Ошибка сохранения продукта внутри транзакции",
+				interfaces.LogField{Key: "error", Value: err},
+				interfaces.LogField{Key: "product_id", Value: product.ID},
+				interfaces.LogField{Key: "tenant_id", Value: product.TenantID},
+			)
+			return fmt.Errorf("repository.SaveProduct failed: %w", err)
+		}
+
+		createdProduct = product
+
+		s.logger.InfoWithContext(txCtx, "Продукт успешно сохранен внутри транзакции", interfaces.LogField{Key: "product_id", Value: product.ID})
+		return nil
+	})
+
 	if err != nil {
-		return nil, fmt.Errorf("failed to save product: %w", err)
+		s.logger.ErrorWithContext(ctx, "Ошибка выполнения транзакции создания продукта", interfaces.LogField{Key: "error", Value: err})
+		return nil, fmt.Errorf("transaction failed: %w", err)
 	}
+
+	// ---- Транзакция успешно ЗАКОММИЧЕНА ----
+	s.logger.InfoWithContext(ctx, "Транзакция создания продукта успешно закоммичена", interfaces.LogField{Key: "product_id", Value: createdProduct.ID})
 
 	event := struct {
 		EventType string                 `json:"event_type"`
@@ -77,20 +101,33 @@ func (s *ProductService) CreateProduct(ctx context.Context, product *models.Prod
 		Payload   map[string]interface{} `json:"payload"`
 	}{
 		EventType: messaging.ProductCreatedEvent,
-		TenantID:  product.TenantID,
+		TenantID:  createdProduct.TenantID,
 		Payload: map[string]interface{}{
-			"product_id":  product.ID,
-			"supplier_id": product.SupplierID,
+			"product_id":  createdProduct.ID,
+			"supplier_id": createdProduct.SupplierID,
 		},
 	}
 
-	eventData, _ := json.Marshal(event)
-	err = s.messaging.Publish(ctx, "product-events", eventData)
-	if err != nil {
-		return nil, err
+	eventData, marshalErr := json.Marshal(event)
+	if marshalErr != nil {
+		s.logger.ErrorWithContext(ctx, "Ошибка маршалинга события ProductCreated после коммита",
+			interfaces.LogField{Key: "error", Value: marshalErr},
+			interfaces.LogField{Key: "product_id", Value: createdProduct.ID})
+		// Продукт создан, но событие не уйдет. Логируем, но не возвращаем ошибку клиенту.
+	} else {
+		publishErr := s.messaging.Publish(ctx, "product-events", eventData)
+		if publishErr != nil {
+			s.logger.ErrorWithContext(ctx, "Ошибка публикации события ProductCreated после коммита",
+				interfaces.LogField{Key: "error", Value: publishErr},
+				interfaces.LogField{Key: "product_id", Value: createdProduct.ID})
+			// ОЧЕНЬ ВАЖНО ЛОГИРОВАТЬ ЭТУ ОШИБКУ!
+		} else {
+			s.logger.InfoWithContext(ctx, "Событие ProductCreated успешно опубликовано после коммита",
+				interfaces.LogField{Key: "product_id", Value: createdProduct.ID})
+		}
 	}
 
-	return product, nil
+	return createdProduct, nil
 }
 
 func (s *ProductService) GetProduct(ctx context.Context, productID, supplierID, tenantID string) (*models.Product, error) {

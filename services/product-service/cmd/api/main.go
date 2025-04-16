@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/athebyme/gomarket-platform/pkg/interfaces"
+	"github.com/athebyme/gomarket-platform/pkg/tx"
 	"github.com/athebyme/gomarket-platform/product-service/config"
 	"github.com/athebyme/gomarket-platform/product-service/internal/adapters/cache"
 	"github.com/athebyme/gomarket-platform/product-service/internal/adapters/logger"
@@ -12,8 +14,10 @@ import (
 	"github.com/athebyme/gomarket-platform/product-service/internal/api"
 	"github.com/athebyme/gomarket-platform/product-service/internal/domain/services"
 	"github.com/athebyme/gomarket-platform/product-service/internal/utils"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -51,6 +55,7 @@ func main() {
 		fmt.Printf("Ошибка загрузки конфигурации: %v\n", err)
 		os.Exit(1)
 	}
+	log.Printf("Загружена конфигурация. Порт сервера: %d", cfg.Server.Port)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -66,7 +71,7 @@ func main() {
 		interfaces.LogField{Key: "env", Value: cfg.ENV},
 	)
 
-	postgresCon, err := utils.GenerateConnectionString(
+	connectionStr, err := utils.GenerateConnectionString(
 		cfg.Postgres.Host,
 		cfg.Postgres.User,
 		cfg.Postgres.Password,
@@ -81,20 +86,27 @@ func main() {
 		os.Exit(1)
 	}
 
-	db, err := postgres.NewPostgresStorage(
-		ctx,
-		postgresCon,
-	)
+	pool, err := pgxpool.New(ctx, connectionStr)
 	if err != nil {
-		log.Fatal("Ошибка инициализации хранилища", interfaces.LogField{Key: "error", Value: err.Error()})
+		log.Fatal("Ошибка инициализации пула соединений", interfaces.LogField{Key: "error", Value: err})
 	}
-	defer db.Close()
+	defer pool.Close()
+	if err := pool.Ping(ctx); err != nil {
+		log.Fatal("Не удалось подключиться к базе данных", interfaces.LogField{Key: "error", Value: err})
+	}
+	log.Info("Пул соединений с PostgreSQL инициализирован")
+
+	repo, err := postgres.NewPostgresStorageWithPool(ctx, pool)
+	if err != nil {
+		log.Fatal("Ошибка инициализации хранилища",
+			interfaces.LogField{Key: "error", Value: err.Error()})
+	}
 	log.Info("Хранилище инициализировано")
 
 	testCtx, testCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer testCancel()
 
-	if err := checkPostgresConnection(testCtx, db); err != nil {
+	if err := checkPostgresConnection(testCtx, repo); err != nil {
 		log.Fatal("Ошибка подключения к PostgreSQL",
 			interfaces.LogField{Key: "error", Value: err.Error()})
 	}
@@ -119,6 +131,8 @@ func main() {
 	}
 	log.Info("Соединение с Redis проверено")
 
+	log.Info(cfg.Kafka.GroupID)
+
 	messagingClient, err := messaging.NewKafkaMessaging(
 		cfg.Kafka.Brokers,
 		cfg.Kafka.GroupID,
@@ -131,7 +145,9 @@ func main() {
 	defer messagingClient.Close()
 	log.Info("Система обмена сообщениями инициализирована")
 
-	productService := services.NewProductService(db, cacheClient, messagingClient, log)
+	txManager := tx.NewTxManager(pool)
+
+	productService := services.NewProductService(repo, cacheClient, messagingClient, log, txManager)
 	log.Info("Сервис продуктов инициализирован")
 
 	router := api.SetupRouter(productService, log, cfg.Security.CORSAllowOrigins)
@@ -151,7 +167,7 @@ func main() {
 
 	go func() {
 		log.Info("Сервер запущен", interfaces.LogField{Key: "address", Value: server.Addr})
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatal("Ошибка запуска сервера", interfaces.LogField{Key: "error", Value: err.Error()})
 		}
 	}()
@@ -181,7 +197,7 @@ func main() {
 				interfaces.LogField{Key: "error", Value: err.Error()})
 		}
 
-		if err := db.Close(); err != nil {
+		if err := repo.Close(); err != nil {
 			log.Error("Ошибка при закрытии БД",
 				interfaces.LogField{Key: "error", Value: err.Error()})
 		}

@@ -5,7 +5,7 @@ CREATE SCHEMA IF NOT EXISTS product;
 CREATE TABLE IF NOT EXISTS product.products (
                                                 id VARCHAR(36) NOT NULL,
     tenant_id VARCHAR(36) NOT NULL,
-    supplier_id INTEGER NOT NULL,
+    supplier_id VARCHAR(36) NOT NULL,
     base_data JSONB NOT NULL,
     metadata JSONB,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL,
@@ -22,7 +22,7 @@ CREATE INDEX IF NOT EXISTS idx_products_base_data_gin ON product.products USING 
 CREATE TABLE IF NOT EXISTS product.inventory (
                                                  product_id VARCHAR(36) NOT NULL,
     tenant_id VARCHAR(36) NOT NULL,
-    supplier_id INTEGER NOT NULL,
+    supplier_id VARCHAR(36) NOT NULL,
     quantity INTEGER NOT NULL,
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL,
                              PRIMARY KEY (product_id, tenant_id),
@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS product.inventory (
 CREATE TABLE IF NOT EXISTS product.prices (
                                               product_id VARCHAR(36) NOT NULL,
     tenant_id VARCHAR(36) NOT NULL,
-    supplier_id INTEGER NOT NULL,
+    supplier_id VARCHAR(36) NOT NULL,
     base_price DECIMAL(15, 2) NOT NULL,
     special_price DECIMAL(15, 2),
     currency VARCHAR(3) NOT NULL,

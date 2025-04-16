@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/athebyme/gomarket-platform/pkg/tx"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"net/http"
 	"os"
 	"os/signal"
@@ -92,8 +94,8 @@ func main() {
 		cfg.Postgres.Password,
 		cfg.Postgres.DBName,
 		cfg.Postgres.SSLMode,
-		cfg.Postgres.PoolSize,
 		cfg.Postgres.Port,
+		cfg.Postgres.PoolSize,
 		cfg.Postgres.Timeout,
 	)
 	if err != nil {
@@ -101,16 +103,23 @@ func main() {
 			interfaces.LogField{Key: "error", Value: err.Error()})
 	}
 
-	// Инициализируем хранилище
-	repo, err := postgres.NewPostgresStorage(ctx, connectionStr)
+	pool, err := pgxpool.New(ctx, connectionStr)
+	if err != nil {
+		log.Fatal("Ошибка инициализации пула соединений", interfaces.LogField{Key: "error", Value: err})
+	}
+	defer pool.Close()
+	if err := pool.Ping(ctx); err != nil {
+		log.Fatal("Не удалось подключиться к базе данных", interfaces.LogField{Key: "error", Value: err})
+	}
+	log.Info("Пул соединений с PostgreSQL инициализирован")
+
+	repo, err := postgres.NewPostgresStorageWithPool(ctx, pool)
 	if err != nil {
 		log.Fatal("Ошибка инициализации хранилища",
 			interfaces.LogField{Key: "error", Value: err.Error()})
 	}
-	defer repo.Close()
 	log.Info("Хранилище инициализировано")
 
-	// Инициализируем кэш
 	cacheClient, err := cache.NewRedisCache(
 		ctx,
 		cfg.Redis.Host,
@@ -139,8 +148,11 @@ func main() {
 	defer messagingClient.Close()
 	log.Info("Система обмена сообщениями инициализирована")
 
+	txManager := tx.NewTxManager(pool)
+	log.Info("Менеджер транзакций инициализирован")
+
 	// Инициализируем сервис продуктов
-	productService := services.NewProductService(repo, cacheClient, messagingClient, log)
+	productService := services.NewProductService(repo, cacheClient, messagingClient, log, txManager)
 	log.Info("Сервис продуктов инициализирован")
 
 	// Каналы для сигналов и завершения
@@ -287,7 +299,6 @@ func subscribeToProductEvents(ctx context.Context, messagingClient interfaces.Me
 		var event struct {
 			EventType  string                 `json:"event_type"`
 			TenantID   string                 `json:"tenant_id"`
-			ProductID  string                 `json:"product_id"`
 			SupplierID string                 `json:"supplier_id,omitempty"`
 			Payload    map[string]interface{} `json:"payload,omitempty"`
 		}
@@ -301,6 +312,17 @@ func subscribeToProductEvents(ctx context.Context, messagingClient interfaces.Me
 			return err
 		}
 
+		if event.Payload == nil {
+			logger.ErrorWithContext(ctx, "Поле payload отсутствует в событии" /* ... */)
+			return fmt.Errorf("missing payload in event")
+		}
+
+		productID, ok := event.Payload["product_id"].(string)
+		if !ok || productID == "" {
+			logger.ErrorWithContext(ctx, "Не найден или некорректный product_id в payload" /* ... */)
+			return fmt.Errorf("missing or invalid product_id in payload")
+		}
+
 		// Добавляем tenant_id в контекст
 		evtCtx := context.WithValue(ctx, "tenant_id", event.TenantID)
 
@@ -309,27 +331,27 @@ func subscribeToProductEvents(ctx context.Context, messagingClient interfaces.Me
 		case messaging.ProductCreatedEvent:
 			// Логика обработки события создания продукта
 			logger.InfoWithContext(evtCtx, "Обработка события создания продукта",
-				interfaces.LogField{Key: "product_id", Value: event.ProductID},
+				interfaces.LogField{Key: "product_id", Value: productID},
 			)
 
 		case messaging.ProductUpdatedEvent:
 			// Логика обработки события обновления продукта
 			logger.InfoWithContext(evtCtx, "Обработка события обновления продукта",
-				interfaces.LogField{Key: "product_id", Value: event.ProductID},
+				interfaces.LogField{Key: "product_id", Value: productID},
 			)
 
 			// Инвалидация кэша для обновленного продукта
-			cacheKey := fmt.Sprintf("product:%s", event.ProductID)
+			cacheKey := fmt.Sprintf("product:%s", productID)
 			_ = productService.InvalidateCache(evtCtx, cacheKey, event.TenantID)
 
 		case messaging.ProductDeletedEvent:
 			// Логика обработки события удаления продукта
 			logger.InfoWithContext(evtCtx, "Обработка события удаления продукта",
-				interfaces.LogField{Key: "product_id", Value: event.ProductID},
+				interfaces.LogField{Key: "product_id", Value: productID},
 			)
 
 			// Инвалидация кэша для удаленного продукта
-			cacheKey := fmt.Sprintf("product:%s", event.ProductID)
+			cacheKey := fmt.Sprintf("product:%s", productID)
 			_ = productService.InvalidateCache(evtCtx, cacheKey, event.TenantID)
 
 		case "product_price_updated":
