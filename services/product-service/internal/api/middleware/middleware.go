@@ -2,7 +2,9 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"github.com/athebyme/gomarket-platform/pkg/auth"
 	"github.com/athebyme/gomarket-platform/pkg/interfaces"
 	"github.com/athebyme/gomarket-platform/product-service/internal/security"
 	"github.com/google/uuid"
@@ -310,7 +312,6 @@ func JWTAuth(jwtManager *security.JWTManager, logger interfaces.LoggerPort) func
 				return
 			}
 
-			// Проверяем формат токена
 			parts := strings.Split(authHeader, " ")
 			if len(parts) != 2 || parts[0] != "Bearer" {
 				http.Error(w, "Invalid authorization format", http.StatusUnauthorized)
@@ -323,7 +324,7 @@ func JWTAuth(jwtManager *security.JWTManager, logger interfaces.LoggerPort) func
 				logger.WarnWithContext(r.Context(), "Invalid JWT token",
 					interfaces.LogField{Key: "error", Value: err.Error()})
 
-				if err == security.ErrExpiredToken {
+				if errors.Is(err, security.ErrExpiredToken) {
 					http.Error(w, "Token expired", http.StatusUnauthorized)
 				} else {
 					http.Error(w, "Invalid token", http.StatusUnauthorized)
@@ -331,7 +332,6 @@ func JWTAuth(jwtManager *security.JWTManager, logger interfaces.LoggerPort) func
 				return
 			}
 
-			// Добавляем данные из токена в контекст
 			ctx := context.WithValue(r.Context(), "user_id", claims.UserID)
 			ctx = context.WithValue(ctx, "tenant_id", claims.TenantID)
 			ctx = context.WithValue(ctx, "roles", claims.Roles)
@@ -446,6 +446,63 @@ func HasPermission(permission string) func(http.Handler) http.Handler {
 			}
 
 			if !hasPermission {
+				http.Error(w, "Forbidden", http.StatusForbidden)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// KeycloakAuth проверяет JWT токен с помощью Keycloak
+func KeycloakAuth(keycloak *auth.KeycloakClient, logger interfaces.LoggerPort) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			authHeader := r.Header.Get("Authorization")
+			if authHeader == "" {
+				http.Error(w, "Authorization header is required", http.StatusUnauthorized)
+				return
+			}
+
+			parts := strings.Split(authHeader, " ")
+			if len(parts) != 2 || parts[0] != "Bearer" {
+				http.Error(w, "Invalid authorization format", http.StatusUnauthorized)
+				return
+			}
+
+			tokenStr := parts[1]
+			claims, err := keycloak.ValidateToken(r.Context(), tokenStr)
+			if err != nil {
+				logger.WarnWithContext(r.Context(), "Token validation failed", "error", err)
+				http.Error(w, "Invalid token", http.StatusUnauthorized)
+				return
+			}
+
+			ctx := context.WithValue(r.Context(), "user_id", claims.UserID)
+			ctx = context.WithValue(ctx, "tenant_id", claims.TenantID)
+			ctx = context.WithValue(ctx, "username", claims.Username)
+			ctx = context.WithValue(ctx, "email", claims.Email)
+			ctx = context.WithValue(ctx, "roles", claims.RealmAccess.Roles)
+			ctx = context.WithValue(ctx, "claims", claims)
+
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+// RequireProductPermission проверяет наличие определенного разрешения для продуктов
+func RequireProductPermission(keycloak *auth.KeycloakClient, permission string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			claims, ok := r.Context().Value("claims").(*auth.KeycloakClaims)
+			if !ok {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+
+			roleToCheck := "products:" + permission
+			if !keycloak.HasRole(claims, roleToCheck) && !keycloak.HasRole(claims, "admin") {
 				http.Error(w, "Forbidden", http.StatusForbidden)
 				return
 			}

@@ -78,3 +78,10 @@ resilience:
   circuitTimeout: 30s
   halfOpenMaxReqs: 5
   tripThreshold: 10
+
+keycloak:
+  enabled: true
+  server_url: "http://host.docker.internal:8085"
+  realm: "gomarket"
+  client_id: "product-service"
+  client_secret: ""

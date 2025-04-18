@@ -1,11 +1,11 @@
 package api
 
 import (
+	"github.com/athebyme/gomarket-platform/pkg/auth"
 	"github.com/athebyme/gomarket-platform/pkg/interfaces"
 	"github.com/athebyme/gomarket-platform/product-service/internal/api/handlers"
 	"github.com/athebyme/gomarket-platform/product-service/internal/api/middleware"
 	"github.com/athebyme/gomarket-platform/product-service/internal/domain/services"
-	"github.com/athebyme/gomarket-platform/product-service/internal/security"
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	httpSwagger "github.com/swaggo/http-swagger"
@@ -18,7 +18,7 @@ func SetupRouter(
 	productService services.ProductServiceInterface,
 	logger interfaces.LoggerPort,
 	corsAllowedOrigins []string,
-	jwtManager *security.JWTManager,
+	keycloakClient *auth.KeycloakClient,
 ) *chi.Mux {
 	r := chi.NewRouter()
 
@@ -46,32 +46,33 @@ func SetupRouter(
 	))
 
 	r.Route("/api/v1", func(r chi.Router) {
-		r.Use(middleware.JWTAuth(jwtManager, logger))
-		r.Use(middleware.CSRF) // Защита от CSRF
+		r.Use(middleware.KeycloakAuth(keycloakClient, logger))
+		r.Use(middleware.Tenant)
+		r.Use(middleware.Supplier)
 
 		productHandler := handlers.NewProductHandler(productService, logger)
 
 		// Маршруты для продуктов
 		r.Route("/products", func(r chi.Router) {
 			// Получение списка продуктов
-			r.With(middleware.HasPermission("products:read")).Get("/", productHandler.ListProducts)
+			r.With(middleware.RequireProductPermission(keycloakClient, "read")).Get("/", productHandler.ListProducts)
 
 			// Создание продукта
-			r.With(middleware.HasPermission("products:create")).Post("/", productHandler.CreateProduct)
+			r.With(middleware.RequireProductPermission(keycloakClient, "create")).Post("/", productHandler.CreateProduct)
 
 			// Операции с конкретным продуктом
 			r.Route("/{id}", func(r chi.Router) {
 				// Получение продукта по ID
-				r.With(middleware.HasPermission("products:read")).Get("/", productHandler.GetProduct)
+				r.With(middleware.RequireProductPermission(keycloakClient, "read")).Get("/", productHandler.GetProduct)
 
 				// Обновление продукта
-				r.With(middleware.HasPermission("products:update")).Put("/", productHandler.UpdateProduct)
+				r.With(middleware.RequireProductPermission(keycloakClient, "update")).Put("/", productHandler.UpdateProduct)
 
 				// Удаление продукта
-				r.With(middleware.HasPermission("products:delete")).Delete("/", productHandler.DeleteProduct)
+				r.With(middleware.RequireProductPermission(keycloakClient, "delete")).Delete("/", productHandler.DeleteProduct)
 
 				// Синхронизация продукта с маркетплейсом
-				r.With(middleware.HasPermission("products:sync")).Post("/sync", productHandler.SyncProductToMarketplace)
+				r.With(middleware.RequireProductPermission(keycloakClient, "sync")).Post("/sync", productHandler.SyncProductToMarketplace)
 			})
 		})
 	})

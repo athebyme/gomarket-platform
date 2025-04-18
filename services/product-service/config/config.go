@@ -104,6 +104,8 @@ type Config struct {
 		HalfOpenMaxReqs int           // макс. запросов в полуоткрытом состоянии
 		TripThreshold   int           // порог ошибок для размыкания
 	}
+
+	Keycloak KeycloakConfig
 }
 
 // Load загружает конфигурацию из файла и переменных окружения

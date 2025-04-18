@@ -272,6 +272,7 @@ services:
       start_period: 15s
     networks:
       - product-service-network
+      - goapp-network
     restart: unless-stopped
 
   # Воркер продуктового сервиса
@@ -331,3 +332,5 @@ volumes:
 networks:
   product-service-network:
     driver: bridge
+  goapp-network:
+    external: true

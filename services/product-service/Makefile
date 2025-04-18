@@ -91,3 +91,21 @@ swagger:
 	@echo "Генерация Swagger документации..."
 	swag init -g cmd/api/main.go -o ./docs
 	@echo "Документация сгенерирована."
+
+keycloak-up:
+	@echo "Запуск Keycloak..."
+	docker-compose -f ../../deployment/docker-compose/docker-compose.keycloak.yml up -d
+	@echo "Keycloak запущен на порту 8085"
+
+keycloak-down:
+	@echo "Остановка Keycloak..."
+	docker-compose -f deployment/docker-compose/docker-compose.keycloak.yml down
+	@echo "Keycloak остановлен"
+
+keycloak-setup:
+	@echo "Настройка Keycloak..."
+	chmod +x ../../deployment/keycloak/setup/setup-realm.sh
+	chmod +x ../../deployment/keycloak/setup/setup-clients.sh
+	../../deployment/keycloak/setup/setup-realm.sh
+	../../deployment/keycloak/setup/setup-clients.sh
+	@echo "Настройка Keycloak завершена"
